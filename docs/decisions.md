@@ -23,6 +23,130 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-010: M0 feature triage — scope verdicts  (2026-07-17, accepted)
+
+**Decision:** Full walk of every `proposed` features.md row and open question with
+the project owner (structured prompt session, 2026-07-17). Verdicts:
+
+*Promoted to confirmed:* capability-report page (M1); resumable + integrity-checked
+downloads, storage quota/persistence/eviction UX, and the model metadata inspector
+(M2); HF token for gated models and pre-download license/gating surfacing (M5);
+generation parameter controls incl. seed, stop/abort/regenerate/edit-and-resend,
+chat history persistence + export/import, token/context-window display, and context
+caching (M6 — context caching was owner scope that had no row; added); side-by-side
+comparison and structured output testing (M7 — structured output is per-adapter
+capability work, so it lands with runtime breadth); standard metric set, iterations
+with median/p95/variance, results export + history, and the prompt library (M8 —
+saved prompt sets and benchmark datasets share one design); tool/function-calling
+harness (M9+, dependent on structured output landing first); shareable config
+permalinks, diagnostics pane/export, and PWA/offline (M10 — PWA service-worker
+design must respect the hosting-spike isolation outcome); long-context/KV-growth and
+sustained-throughput stress tests (new post-launch M11, keeping M8 shippable).
+
+*Conditional:* WebLLM is confirmed for M7 contingent on the M0 survey verifying its
+license and maintenance health — a red flag there reopens the verdict.
+
+*Deferred to evidence:* MediaPipe LLM stays `proposed`; the M0 runtime survey's
+evidence (license, health, capability added vs. the cost of a new .task/.litertlm
+format pipeline) decides.
+
+*Parked:* direct ONNX Runtime Web (not via transformers.js) — reopen if isolating
+ORT behavior becomes necessary for debugging transformers.js issues.
+
+*Rejected for now:* embeddings-model testing — keeps v1 tight on the chat/benchmark
+loop; re-proposable post-launch.
+
+*Open questions answered:* mobile is **best-effort** — nothing gated on it, failures
+logged as rough edges, no v1 mobile UX investment (Q2). Prompt API surface
+verification is **closed as process** — root rule 4 already mandates build-time
+re-verification (Q5). **"WebAI" is the product name**, not a working title (Q6).
+Benchmark datasets are **BYO JSON against a documented schema plus one small bundled
+default set** with a verified-permissive license (Q7). Storage origin: the owner
+prefers **staying at https://meenan.dev/webai/ and explicitly accepting the
+shared-origin storage model**; the hosting spike verifies there is no blocker — a
+blocker reopens this and would supersede D-001 (Q8). Questions 1 (isolation
+strategy), 3 (storage layout), and 4 (benchmark honesty labeling) stay open, owned
+by the M0 hosting spike and architecture draft.
+
+**Context:** M0 exit criterion "every proposed row resolved and every open question
+answered." Conducted as a direct prompt walk at the owner's request; the owner took
+the recommended option on all items except PWA/offline, which they promoted outright
+rather than parking pending the hosting spike.
+
+**Consequences:** features.md statuses updated; plan.md ladder updated in the same
+change — former *(triage)* markers resolved, M7 gains structured output, M9 gains
+the tool-calling harness, M10 gains permalinks, and M11 (stress benchmarking) is
+added. The remaining provisional ladder content is survey-owned: the MediaPipe
+verdict and the WebLLM health check above. *Annotation (2026-07-17):* the M0 triage
+checklist item was re-scoped with owner approval to "resolve all that don't require
+experimental evidence, handing remnants to single owning M0 items" and checked; the
+M0 exit criteria still gate on those remnants closing (survey, hosting spike,
+architecture draft).
+
+**Reopen if:** Individual verdicts reopen via their own new entries with new
+evidence — notably WebLLM on a bad survey result, ORT-direct on a debugging need,
+embeddings post-launch, and Q8 on a hosting-spike blocker.
+
+## D-009: In-app GGUF splitting, streaming during download  (2026-07-17, accepted)
+
+**Decision:** Ship a wasm build of llama.cpp's gguf-split as part of the app, and run
+it as a stage of the download pipeline: monolithic GGUFs beyond wllama/wasm size
+limits are split *while the download streams*, buffering as much of the stream as the
+GGUF offset tables require, rather than materializing the whole file and splitting
+afterward. Memory/storage headroom is assumed — this is a developer-targeted tool on
+developer-class machines, not low-end consumer hardware (owner call, 2026-07-17).
+
+**Context:** Popular quant repos — unsloth is the concrete case — publish monolithic
+multi-GB GGUFs with no split variants, so the capability must exist on our side
+regardless of any runtime's ability to *load* pre-split files. Evidence: the owner
+hit exactly this with unsloth quants in parallax-web. Streaming split also avoids the
+transient ~2× storage cost of split-after-download. *Annotation (2026-07-17):*
+upstream `tools/gguf-split/gguf-split.cpp` was checked — it opens the complete input
+file, seeks to tensor offsets, and buffers whole tensors, so the wasm streaming
+stage is an I/O redesign of the tool, not a recompile; this is exactly what the M3
+feasibility experiment gates.
+
+**Consequences:** The download manager and splitter are one worker pipeline; if
+resumable downloads are confirmed in triage, resume must be designed against split
+output, not a single file. Streaming-during-download is the preferred path, not the
+only one: the same splitter must also run on demand against already-stored
+monolithic files (user imports, downloads made before the splitter existed). The
+splitter parses untrusted GGUF headers → D-006 applies
+in full (bounded reads, malformed-file fixtures). Streaming feasibility (how much
+buffering the offset tables actually demand) is verified experimentally at M3 start —
+measure, don't assert (root rule 3).
+
+**Reopen if:** The M3 experiment shows streaming split is infeasible or pathological
+(fallback: split-after-download — amend this entry, the *requirement* to split
+stands); or wasm/runtime size limits move enough that monolithic files load directly.
+
+## D-008: Milestone ladder: risk-first vertical slice (M1–M10)  (2026-07-17, accepted)
+
+**Decision:** The plan.md ladder is ordered: shell + capability layer + live deploy
+(M1) → manual model acquisition (M2) → first chat on wllama incl. streaming split
+(M3) → Prompt API as the *second* runtime (M4) → model browsing (M5) → chat testing
+depth (M6) → runtime breadth (M7) → benchmark harness (M8) → multimodal (M9) →
+capability filtering + launch (M10). Live per-response metrics ship with the first
+chat in M3, not with the benchmark harness.
+
+**Context:** Agreed in a planning conversation with the owner (2026-07-17),
+reshaping the provisional ladder. Rationale: front-load platform risk — deploy
+headers/CORS at the real origin, OPFS, multi-GB downloads, wasm inference — and
+defer conventional web dev (browse UI was M2 provisionally, now M5, behind manual
+entry). Prompt API second forces the adapter contract to absorb its most divergent
+case (main-thread D-007, browser-managed model, no download) before conventional
+runtimes calcify assumptions. The benchmark harness follows runtime breadth because
+cross-runtime comparability is its reason to exist; gguf-split moved from a late
+"tooling" milestone into M3 because it is load-bearing for first chat (D-009).
+
+**Consequences:** Milestone contents marked *(triage)* remain provisional until the
+M0 feature triage; re-scoping happens in plan.md with new decision entries per its
+header. Exit criteria are phrased as live-site user capabilities — every milestone
+ends deployed.
+
+**Reopen if:** Re-litigating the *order* needs new evidence (a milestone blocked on
+a later one's output, or an M0 spike invalidating an assumption) — not taste.
+
 ## D-007: Our compute runs in workers; browser-managed inference is the exception  (2026-07-17, accepted)
 
 **Decision:** All compute this app performs itself — in-page inference, tokenization,

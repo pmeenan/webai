@@ -18,9 +18,15 @@ owner plus targeted research/spikes where a decision needs evidence.
 
 - [x] Repo scaffolding for the AI-directed workflow: AGENTS.md, CLAUDE.md, docs/
       (vision, features, plan, architecture, decisions, rough-edges, workflow).
-- [ ] Feature triage: walk [features.md](features.md) with the project owner; promote
-      or reject every `proposed` row; answer the open questions; record the
-      significant calls in [decisions.md](decisions.md).
+- [x] Feature triage: walk every `proposed` [features.md](features.md) row and open
+      question with the project owner; resolve all that don't require experimental
+      evidence (confirm, park, or reject); record the calls in
+      [decisions.md](decisions.md); hand each remnant to exactly one owning M0 item.
+      *(Done 2026-07-17, verdicts in D-010. Deliberately re-scoped from "resolve
+      every row" with owner approval so each remaining unknown has a single owner:
+      MediaPipe verdict + WebLLM health check → runtime survey; open question 1 +
+      question 8 validation → hosting spike; questions 3/4 → architecture draft.
+      The exit criteria below still gate M0 on all of these closing.)*
 - [ ] Runtime/backend survey (current sources, not training knowledge — root rule 4):
       for each candidate runtime (wllama, transformers.js, WebLLM, MediaPipe,
       ONNX Runtime Web, Prompt API, others discovered), document version, formats,
@@ -31,8 +37,9 @@ owner plus targeted research/spikes where a decision needs evidence.
       Hugging Face CORS behavior (downloads + API), `/webai/` base path, header
       configuration for the rsync deploy target, and the shared-origin storage
       question (OPFS/IndexedDB/quota are origin-scoped — path vs. dedicated origin).
-      Output: decisions on the isolation strategy and the origin (features.md open
-      questions 1 and 8).
+      Output: a decision on the isolation strategy (features.md open question 1)
+      and validation of the accepted `/webai/` shared-origin preference (question 8,
+      D-010) — the origin choice reopens only if the spike finds a blocker.
 - [ ] Hugging Face API spike: search/filter capabilities of the public REST API from
       a browser client (rate limits, CORS, what "browser-suitable" filters are
       actually expressible), LFS metadata for integrity/resume.
@@ -45,7 +52,10 @@ owner plus targeted research/spikes where a decision needs evidence.
 - [ ] UI/design direction: look-and-feel brief for the "slick chat UI", theming
       (light/dark), design-token approach; decide whether a Design.md (golemine-style
       design system doc) is warranted from M1.
-- [ ] Rewrite the provisional ladder below into real milestones with exit criteria.
+- [x] Rewrite the provisional ladder below into real milestones with exit criteria
+      (D-008; the 2026-07-17 triage (D-010) then resolved the provisional
+      *(triage)* markers — the MediaPipe verdict and the WebLLM health check remain
+      survey-dependent).
 
 **Exit criteria:** every checklist item above is checked; every `proposed` row in
 features.md is resolved **and every features.md open question answered**, with
@@ -53,28 +63,211 @@ decision-log entries for the significant calls; architecture.md first draft revi
 toolchain decided; M1+ milestones have scopes and exit criteria. Nothing on this list
 is optional — M0 is not done while any item above remains open.
 
-## Provisional milestone ladder  `pending — to be rewritten in M0`
+## Milestone ladder
 
-Ordered by risk: platform substrate and one working end-to-end path before breadth.
-Sketch only — do not start work from these entries, and note that they freely
-reference `proposed` features.md rows; nothing here pre-empts the M0 triage.
+Ordered by risk: platform substrate and one working end-to-end path before breadth
+(rationale in D-008 — deploy and capability layer first, manual acquisition before
+browse UI, the most divergent runtime second, benchmark harness after runtime
+breadth). Every milestone ends deployed: its exit criterion is something a user on
+the live site can do.
 
-- **M1 — Scaffolding & shell.** Astro project with base path, strict TS, tests, CI,
-  license audit, deploy script (build + rsync dry-run), capability-report page as the
-  first real feature (it exercises the gating layer everything else needs).
-- **M2 — Models.** HF search/browse/filter, download manager (progress, resume,
-  integrity), OPFS model store + management UI, user import, GGUF metadata inspection.
-- **M3 — First chat.** Chat UI with streaming, system prompt, generation params, one
-  runtime end-to-end (likely wllama single-thread as lowest-common-denominator, or
-  transformers.js — decide in M0).
-- **M4 — Runtime breadth.** Runtime adapter layer proven by adding the runtimes
-  selected in the M0 survey, incl. the Prompt API (with its browser-managed download
-  flow); per-runtime capability gating; side-by-side comparison if confirmed.
-- **M5 — Tooling.** gguf-split wasm build + split/merge UI; sharded model handling
-  end-to-end.
-- **M6 — Benchmarking.** Dataset config, metric capture, iterations/statistics,
-  results history + export.
-- **M7 — Multimodal.** Image input for supporting runtimes/models; Prompt API
-  multimodal.
-- **M8 — Polish & launch.** Design polish, docs/guides, cross-browser pass, PWA if
-  confirmed.
+Scope is at deliverable granularity; the tech lead breaks a milestone into finer
+tasks when work on it starts. The M0 feature triage (D-010) resolved the former
+*(triage)* markers; the remaining provisional items are survey-owned — the MediaPipe
+verdict and the WebLLM license/maintenance health check (both M7, D-010).
+
+### M1 — Shell, toolchain, live deploy  `pending`
+
+Goal: a deployed, styled app shell with the capability layer and its first consumer.
+Depends on M0: hosting spike, toolchain decisions, UI/design direction.
+
+- [ ] Toolchain per the M0 decisions: Astro + islands framework, package manager,
+      unit + e2e test stacks, lint/format, CI with license audit.
+- [ ] App shell: navigation, look-and-feel foundation (theming, design tokens),
+      project details/about page.
+- [ ] Capability layer (stable environment probes per architecture.md) and the
+      capability-report page as the first real feature — it exercises the gating
+      everything else consumes and starts feeding rough-edges.md.
+- [ ] Deploy pipeline: build + rsync to https://meenan.dev/webai/ with the headers
+      chosen by the hosting spike; verify base path, isolation state, and HF CORS
+      from the real origin.
+
+**Exit criteria:** a visitor to the live site sees the styled shell and an accurate
+capability report for their browser; CI runs typecheck/lint/tests/license audit.
+
+### M2 — Manual model acquisition  `pending`
+
+Goal: model files travel reliably from Hugging Face (or local disk) into managed
+local storage — verified via metadata inspection, before any inference exists.
+Depends on M0: HF API spike.
+
+- [ ] Model ID / URL entry → repo file and quant listing via the HF API.
+- [ ] Download manager in a worker: streaming progress; resumable +
+      integrity-checked. Resume design must anticipate the M3 streaming-split
+      stage — a resumed download may target split output, not a single file
+      (D-009).
+- [ ] OPFS model store with manifest (source, revision, size, hashes, format
+      metadata) + management UI: list, inspect, delete, storage usage and quota
+      (incl. `persist()` and eviction awareness).
+- [ ] User-provided model import (file picker / drag-drop, incl. already-sharded
+      models).
+- [ ] Defensive GGUF metadata parser (D-006, malformed-fixture tests) + inspector —
+      the verification surface for downloads until M3 exists.
+
+**Exit criteria:** a user can enter a repo ID (e.g., an unsloth GGUF repo), pick a
+quant, download it with progress, see it in the model manager, and inspect its
+metadata; malformed/hostile files fail with a report, never a crash.
+
+### M3 — First chat: wllama, with streaming split  `pending`
+
+Goal: end-to-end text chat with a downloaded GGUF — including the monolithic
+multi-GB quants that make splitting mandatory (D-009).
+
+- [ ] wasm build of llama.cpp's gguf-split (upstream MIT, NOTICE entry) running in a
+      worker as a download-pipeline stage: split while streaming, buffering only what
+      the offset tables require (D-009). Verify streaming feasibility experimentally
+      at milestone start; fallback is split-after-download (amend D-009 if so).
+- [ ] Split-on-demand over already-stored files: user imports and any pre-split
+      downloads run through the same splitter against OPFS — the streaming download
+      stage is not the only path (D-009).
+- [ ] wllama runtime adapter — the first `Runtime` implementation; CPU
+      single/multi-thread and WebGPU backends per capability gating (WebGPU is on by
+      default since wllama v3.1 — README checked 2026-07-17). Verify current
+      shard-size limits and split-output compatibility at build time (root rule 4).
+- [ ] Streaming chat UI over the adapter.
+- [ ] Live per-response metrics from the first message: model load time,
+      time-to-first-token, prefill/decode tok/s — every chat is a measurement.
+
+**Exit criteria:** on the live site, chat with a monolithic >2 GB GGUF quant
+end-to-end — auto-split on download, or split on demand for an imported file — with
+streaming output and live metrics.
+
+### M4 — Second runtime: Prompt API  `pending`
+
+Goal: prove the runtime adapter contract on the most divergent case — main-thread
+(D-007), browser-managed model, no HF download — before conventional runtimes
+calcify assumptions into it.
+
+- [ ] Prompt API adapter: availability probing, browser-managed download flow with
+      progress, session params it actually exposes (re-verify surface, root rule 4).
+- [ ] Runtime/model selection UI; unavailable runtimes disabled with the reason.
+
+**Exit criteria:** a user can switch the same chat surface between a downloaded
+GGUF-on-wllama and Gemini Nano, on a browser with the API; on other browsers the
+option is visibly gated with an explanation.
+
+### M5 — Model browsing  `pending`
+
+Goal: discovery without leaving the app.
+
+- [ ] HF search/browse with in-browser-suitability filters (size, format, quant,
+      task).
+- [ ] Basic suitability hints (file size vs. quota/memory); full capability-based
+      filtering stays in M10.
+- [ ] Model license + gating status surfaced pre-download; HF token for gated models
+      (stored locally only).
+
+**Exit criteria:** a user finds, evaluates, and downloads a suitable model entirely
+in-app; the manual-entry path from M2 remains as the escape hatch.
+
+### M6 — Chat testing depth  `pending`
+
+Goal: the chat surface becomes a real testing instrument.
+
+- [ ] System prompt configuration.
+- [ ] Generation parameter controls incl. seed.
+- [ ] Stop/abort, regenerate, edit-and-resend.
+- [ ] Chat history persistence + export/import.
+- [ ] Token count / context-window usage display; tokenizer inspector.
+- [ ] Context caching (prefix/KV reuse) where the runtime supports it.
+
+**Exit criteria:** a user can reproduce a configured chat (params + seed where
+supported), manage histories, and see context usage while testing.
+
+### M7 — Runtime breadth  `pending`
+
+Goal: the adapter layer earns its keep. Depends on M0: runtime survey
+(health-checks WebLLM, decides MediaPipe; direct ONNX Runtime Web is parked —
+D-010).
+
+- [ ] transformers.js adapter: wasm / WebGPU / WebNN backends, per-backend gating,
+      its own model-cache accounting story (features.md open question 3) — this is
+      where cross-runtime cache accounting from the M2 storage UI becomes real.
+- [ ] ONNX metadata parsing joins the model inspector (same D-006 discipline as the
+      M2 GGUF parser; the ONNX side arrives with the format's first runtime).
+- [ ] WebLLM adapter (confirmed contingent on the survey's license/maintenance
+      check, D-010); any other survey-selected runtimes each with a decision entry.
+- [ ] Structured output testing (JSON schema / GBNF / Prompt API constraints) as
+      per-adapter capability work — each adapter declares and demonstrates what it
+      supports.
+- [ ] Side-by-side comparison: same prompt across N model/runtime/backend combos.
+
+**Exit criteria:** every adapter added in this milestone demonstrates a
+representative model on each backend the browser supports; the same prompt runs
+side-by-side across at least two runtimes (same model where formats allow,
+equivalent models otherwise); and every impossible combination is labeled with the
+reason.
+
+### M8 — Benchmark harness  `pending`
+
+Goal: honest, comparable, exportable numbers — most valuable now that there are
+multiple runtimes to compare.
+
+- [ ] Dataset configuration — BYO JSON against a documented schema plus one small
+      bundled permissively-licensed default set (D-010) — and run configuration over
+      the same adapters chat uses.
+- [ ] Prompt library: saved/named prompts and reusable test sets, sharing the
+      dataset design (D-010).
+- [ ] Standard metric set incl. memory, per the isolation decision; labeling for
+      what each backend cannot measure (open question 4).
+- [ ] Iterations with median/p95 and variance.
+- [ ] Results history + JSON/CSV export.
+
+**Exit criteria:** a user runs a repeatable benchmark across ≥2 runtime/backend
+combos and exports results that state their own measurement caveats.
+
+### M9 — Multimodal & tool calling  `pending`
+
+Goal: image input (audio later) where model + runtime support it, and the
+tool-calling harness now that structured output (M7) exists to build on.
+
+- [ ] Multimodal capability declaration in the adapter contract; per-combo gating.
+- [ ] Image input in chat for supporting runtimes (survey says which); Prompt API
+      multimodal (re-verify current surface, root rule 4).
+- [ ] Tool/function-calling test harness where runtimes support it (D-010; depends
+      on M7 structured output).
+
+*Audio input stays confirmed scope but deliberately unscheduled — it gets a plan
+slot once image multimodal has landed and proven the pipeline.*
+
+**Exit criteria:** a user chats with images on a supporting model/runtime combo and
+can exercise tool-calling where supported; unsupported combos say why.
+
+### M10 — Capability filtering, polish, launch  `pending`
+
+Goal: close the loop — discovery filtered by what *this* machine can actually run —
+and ship.
+
+- [ ] Model browsing filtered/annotated by local capability report ("runs here"
+      badges tying M1's probes to M5's browse).
+- [ ] Cross-browser pass; findings logged to rough-edges.md.
+- [ ] Shareable config permalinks (model+runtime+params in the URL — config only,
+      never results).
+- [ ] Diagnostics pane / exportable diagnostic report.
+- [ ] PWA/offline (service-worker design per the hosting-spike isolation outcome).
+- [ ] Docs/guides, design polish, launch.
+
+**Exit criteria:** a first-time visitor on any modern browser gets an honest,
+filtered view of what they can run, and the launch checklist in this milestone is
+green.
+
+### M11 — Stress benchmarking  `pending`
+
+Goal: post-launch — probe where in-browser inference actually falls over (D-010
+placed these here to keep M8 shippable).
+
+- [ ] Long-context / KV-cache growth stress test.
+- [ ] Sustained-throughput degradation run (thermal/throttling proxy).
+
+**Exit criteria:** a user can run both stress modes on any working model/runtime
+combo and export results showing where and how performance degrades.

@@ -18,8 +18,9 @@ settled, so drafting can build on it rather than re-derive it.
 
 ## Expected shape (to be validated in the M0 draft)
 
-Where a bullet below leans on a `proposed` features.md row, it is a design assumption
-to confirm during feature triage, not settled scope.
+The 2026-07-17 feature triage (D-010) confirmed the rows these bullets lean on; the
+survey-dependent runtime items still pending are the MediaPipe verdict and the
+WebLLM license/maintenance health check.
 
 - **Runtime adapter layer.** One `Runtime` interface (load model → session → stream
   tokens / abort → dispose, plus capability declaration and metric hooks) with
@@ -31,15 +32,24 @@ to confirm during feature triage, not settled scope.
   adapter/features/limits incl. shader-f16, wasm SIMD/threads, WebNN,
   crossOriginIsolated) computed once per session, and volatile state (storage quota,
   Prompt API model availability/downloadability, GPU device loss) re-read on defined
-  invalidation events — downloads and imports, model acquisition, `device.lost`.
+  invalidation events — downloads, imports, model deletion, model acquisition,
+  `device.lost` — plus detection of external eviction: storage that disappears out
+  from under the manifest is a defined, reported state, not a crash.
   Consumed by runtime gating and the model-suitability filters; the user-facing
-  environment report built on it is a `proposed` feature.
+  environment report built on it lands in M1 (D-010).
 - **Model store.** Likely a single OPFS-backed store with its own manifest (source,
   revision, hashes, size, format metadata) — single store vs. per-runtime native
-  caches is features.md open question 3 — plus a download manager (progress always;
-  Range-resume and integrity checking are `proposed` rows pending triage).
+  caches is features.md open question 3 — plus a download manager (streaming progress,
+  Range-resume, and integrity checking — confirmed, D-010). The wasm
+  gguf-split tool runs as a stage of the download pipeline, splitting monolithic
+  GGUFs as bytes arrive (D-009 — streaming is the preferred path, gated on the M3
+  feasibility experiment; upstream's splitter is seek-based, so this is an I/O
+  redesign, and split-after-download is the recorded fallback). The same splitter
+  also runs on demand against already-stored files (user imports, pre-split
+  downloads). Splitter and download manager share one worker pipeline.
 - **Benchmark harness.** Drives the same runtime adapters as chat; owns dataset
-  loading, iteration/statistics, metric capture, and result persistence/export.
+  loading (BYO JSON schema + one bundled permissively-licensed default set — D-010),
+  iteration/statistics, metric capture, and result persistence/export.
 - **Chat surface.** Astro islands over the adapter layer; streaming UI; system
   prompt + generation params per session.
 
