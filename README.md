@@ -25,8 +25,9 @@ documentation, directed and reviewed by a human.
 
 ## Status
 
-**M0 and M1 are complete.** The styled shell and evidence-based browser capability
-report are deployed. Next up is **M2 (manual model acquisition)** — see
+**M0 and M1 are complete. M2 implementation is review-ready and awaiting live deploy
+verification.** Manual Hugging Face/local acquisition, verified resumable downloads,
+managed browser storage, and GGUF inspection pass locally — see
 [docs/plan.md](docs/plan.md).
 
 ## Develop

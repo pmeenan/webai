@@ -148,27 +148,32 @@ reflow (stricter than a 200%-zoom layout width); coarse-pointer 44px targets; se
 status icons; and designed loading, unavailable, unknown, retry, and persistence
 states. CI runs typecheck/lint/format-check/tests/license audit.
 
-### M2 — Manual model acquisition  `pending`
+### M2 — Manual model acquisition  `in progress`
 
 Goal: model files travel reliably from Hugging Face (or local disk) into managed
 local storage — verified via metadata inspection, before any inference exists.
 Depends on M0: HF API spike.
 
-- [ ] Model ID / URL entry → repo file and quant listing via the HF API.
-- [ ] Download manager in a worker: streaming progress; resumable +
+- [x] Model ID / URL entry → repo file and quant listing via the HF API.
+- [x] Download manager in a worker: streaming progress; resumable +
       integrity-checked per D-013 and the
       [HF API spike](hugging-face-api.md): commit-pinned identity, fresh resolver
       request per range, exact `Content-Range`, restart-safe partial state, and
       worker verification before promotion. Resume design must anticipate the M3
       streaming-split stage — a resumed download may target split output, not a
       single file (D-009).
-- [ ] OPFS model store with manifest (source, revision, size, hashes, format
+- [x] OPFS model store with manifest (source, revision, size, hashes, format
       metadata) + management UI: list, inspect, delete, storage usage and quota
       (incl. `persist()` and eviction awareness).
-- [ ] User-provided model import (file picker / drag-drop, incl. already-sharded
+- [x] User-provided model import (file picker / drag-drop, incl. already-sharded
       models).
-- [ ] Defensive GGUF metadata parser (D-006, malformed-fixture tests) + inspector —
+- [x] Defensive GGUF metadata parser (D-006, malformed-fixture tests) + inspector —
       the verification surface for downloads until M3 exists.
+
+*(Implementation complete and locally verified 2026-07-18. D-025 records the
+worker/storage/parser profile and the measured 1 MiB restart plus complete public
+LFS/Xet-backed GGUF check. The milestone remains in progress until review and the
+live deploy verify the exit flow at `https://webai.meenan.dev/`.)*
 
 **Exit criteria:** a user can enter a repo ID (e.g., an unsloth GGUF repo), pick a
 quant, download it with progress, see it in the model manager, and inspect its

@@ -369,13 +369,13 @@ An interrupted local import becomes `needs-source` if its user-selected file is 
 longer available; re-selection/restart is explicit, and the partial never promotes on
 filename or size alone.
 
-Deletion first marks the target `deleting` and disposes its sessions. For WebAI-owned
+Deletion first makes the target unavailable and disposes its sessions. For WebAI-owned
 artifacts, one IndexedDB transaction removes artifact references, decrements blob
 counts, and records zero-reference garbage candidates. Physical bytes are deleted only
-when reconciliation proves there is no installed/staged reference or active promotion
-reservation. Native-cache removal goes through the adapter and browser-managed targets
-expose only controls the browser provides. Interrupted deletion remains retryable;
-catalog state is removed only after the applicable cleanup is reconciled.
+when there is no installed reference. A garbage tombstone may outlive the catalog
+record, so reconciliation can retry cleanup after a crash without resurrecting a
+model. Native-cache removal goes through the adapter and browser-managed targets
+expose only controls the browser provides. Interrupted deletion remains recoverable.
 
 Schema migrations are versioned, restart-safe, and never delete model bytes merely
 because a newer app cannot parse an older manifest. Unknown future records are
@@ -415,6 +415,44 @@ Remote/API records are schema-validated and bounded before use. Discovery follow
 opaque HF cursors, coalesces/debounces requests, caches enrichment by repo commit, and
 reacts to 429 with bounded jittered backoff plus visible retry/cancel state (D-013,
 RE-006).
+
+### M2 implementation profile
+
+D-025 instantiates the model repository as IndexedDB `webai-v1` stores (`models`,
+`jobs`, `blobs`) over OPFS `webai/v1/{partials,blobs}`. The version-1 acquisition
+worker protocol covers resolve, download/resume/pause/discard, import, reconciliation,
+inventory, and deletion. Network checkpoints are one MiB; each reported prefix is
+flushed independently and actual OPFS size wins during restart reconciliation. The
+ordinary-file sink anticipates M3 by persisting source offset and output path per
+file rather than making a signed URL or page worker lifetime part of identity.
+
+Local imports also write a durable job before bytes and checkpoint in one-MiB batches.
+Worker loss makes an incomplete import `needs-source`; if every file was verified,
+promotion can finish without retaining browser `File` objects. Imports re-read and
+hash the stored OPFS file before promotion rather than trusting only the selected-file
+stream. Finalization failure returns to a manageable `ready-to-install` job. Per-job
+and global acquisition Web Locks serialize duplicate commands, disk-heavy
+acquisition/promotion, deletion, garbage collection, and model/blob manifest mutation
+across tabs.
+Reconciliation revalidates changed snapshot records in its final transaction so it
+cannot resurrect a concurrent delete or overwrite newer job progress; individual I/O
+failures degrade only their record. Zero-reference blob tombstones make physical
+deletion retryable, and an OPFS sweep removes blob files with no manifest or verified
+job after a promotion crash.
+HF 429 responses have a finite full-jitter retry budget and visible waiting state.
+
+On an engine without Web Locks, an in-realm promise queue preserves single-worker
+ordering, but cross-tab exclusion is unavailable. This is a labelled degradation from
+the Chrome-primary profile, not an equivalent coordination guarantee.
+
+Promotion uses OPFS move when available and a verified copy/size-check/delete fallback
+otherwise. Readers still see only the installed IDB state. The GGUF v2/v3 inspector
+has a 16 MiB header budget plus bounded metadata counts, strings, arrays/nesting, and
+display output. Large model bodies are not read by the inspector; only the bounded
+prefix is parsed. These are implementation limits, not claims about model compatibility;
+a controlled bound failure remains inspectable and never promotes a remote artifact.
+RE-011 fixes the storage sequencing rule: do not keep an IndexedDB transaction open
+across any OPFS or other unrelated asynchronous work.
 
 Native-cache adapters must either accept the same verified acquisition output or
 demonstrate, with milestone-specific browser tests, equivalent commit pinning,

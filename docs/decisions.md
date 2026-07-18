@@ -23,6 +23,112 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-025: M2 uses restart-safe OPFS checkpoints, transactional manifests, and bounded GGUF inspection  (2026-07-18, status: accepted)
+
+**Decision:** M2 implements D-013/D-014 with a version-1 model control plane. The
+`webai-v1` IndexedDB database owns `models`, `jobs`, and reference-counted `blobs`
+records; OPFS `webai/v1/` owns content-addressed verified blobs and per-job partials.
+An acquisition worker resolves HF input, downloads/imports, checkpoints, hashes,
+inspects, promotes, reconciles, and deletes. The React island only renders state and
+submits commands. A partial is durable only after an OPFS sync-handle flush; engines
+without sync handles use a slower close-per-checkpoint writable-stream fallback.
+Network responses and local imports checkpoint in 1 MiB batches, while an interrupted
+batch may be re-fetched because it was never reported durable.
+
+Verified staging files use `FileSystemFileHandle.move()` when the capability exists;
+the fallback copies the verified bytes, validates the final size, and deletes staging.
+Only the installed IndexedDB state is loadable, so either physical path remains
+logically atomic to readers. Existing content-addressed blobs are re-hashed before a
+new verified partial is deduplicated against them. Reconciliation reads OPFS before
+opening its short write transaction, uses Web Locks to distinguish work active in
+another tab from an abandoned job, pauses only abandoned remote work, and changes an
+abandoned local import to `needs-source`. A fully verified local import remains
+finalizable without the original `File` objects. Actual durable bytes win over a
+checkpoint count, and installed records become missing when bytes or size disagree.
+One unreadable/corrupt record degrades to `missing`/`failed` without hiding the rest of
+inventory. Before reconciliation writes a changed snapshot, its final transaction
+proves that the model still exists or that the job's `updatedAt` is unchanged; it
+never recreates a concurrently deleted record or overwrites newer progress.
+Per-job and manifest mutation locks prevent duplicate resumes and refcount races.
+Deletion transactionally removes the model reference and leaves zero-reference blob
+garbage tombstones; interrupted physical cleanup is retried during reconciliation.
+The same pass removes content-addressed files that have neither a manifest nor a
+verified resumable job, closing the crash window between per-file promotion and the
+final manifest transaction.
+
+Streaming SHA-256 and the legacy Git-blob SHA-1 identity use `@noble/hashes` 2.2.0
+(MIT, zero runtime dependencies); SHA-1 exists only to reproduce HF Git object IDs,
+not as a new security primitive. The M2 GGUF inspector accepts current GGUF v2/v3,
+reads at most 16 MiB of header data, bounds strings, arrays, nesting, metadata count,
+UTF-8, and displayed entries, and reports controlled failures. Imports accept one
+GGUF or one complete conventionally named shard set, hash the selected source while
+writing, then re-hash the stored OPFS bytes before promotion. A failed finalization
+returns to `ready-to-install`; an active import can be stopped and becomes
+`needs-source`. M3 remains responsible for
+streaming splitting and can replace the ordinary-file sink behind the existing
+durable-source-offset contract.
+
+M2 deliberately lists and selects only LFS SHA-256-identified GGUF weight sets. It
+skips non-GGUF siblings before interpreting their optional size/hash fields, treats a
+valid `00001-of-00001` name as a single artifact, and does not infer runtime companion
+files from names. It therefore does not yet download Git-managed companions. The
+Git-blob hasher and framing tests establish the identity
+primitive for the first runtime adapter that defines an explicit companion manifest
+in M3/M7. HF 429 responses use three bounded exponential full-jitter retries; retry
+state is visible, and an active transfer can be paused to cancel its wait.
+
+**Context:** The implementation was measured 2026-07-18 in Playwright Chromium. Its
+OPFS file handle exposed `move()`; a page/worker reload after exactly 1 MiB durable
+caused the next immutable resolver request to begin at byte 1,048,576, with no request
+for the durable prefix. An end-to-end wrong-status fixture and unit-level range/length
+matrix, plus an end-to-end wrong-final-digest fixture, left no installed record. A
+local import interrupted after its durable job appeared reconciled to `needs-source`
+after reload. Injected physical-delete failure remained recoverable, repeated install
+was idempotent, and malformed/large GGUF fixtures produced controlled results without
+a page crash. Reconciliation/delete overlap did not resurrect a record; oversized
+partials degraded individually; untracked and corrupt content-addressed blobs were
+removed or repaired from verified partials.
+The focused live-HF check downloaded all 1,627,808 bytes of
+`ybelkada/tiny-random-llama-Q4_K_M-GGUF` at commit
+`429fe92916dae4839bfefb46bd0f61f50cc02c73` through its LFS/Xet-backed resolver,
+matched LFS SHA-256
+`f06746ef9696d552d3746516558d5e9f338e581fd969158a90824e24f244169c`, promoted it,
+and inspected `llama` metadata. Current upstream GGUF specification and noble-hashes
+2.2.0 package documentation/license were checked the same day. A current model-info
+check of `bartowski/Llama-3.2-1B-Instruct-GGUF` at commit
+`067b946cf014b7c697f3654f621d577a3e3afd1c` returned 21 siblings spanning GGUF,
+Markdown, `.gitattributes`, and imatrix files, grounding the weights-only parse path
+against a realistic mixed repository. RE-011 records the
+IndexedDB transaction-lifetime trap found by the restart/import tests.
+
+**Consequences:** Signed resolver URLs never enter persisted state; mutable refs are
+provenance only. M2's manager distinguishes exact model/partial bytes from origin-wide
+quota estimates, makes persistence an explicit action, and exposes missing/failed/
+paused state plus deletion/discard controls. The copy fallback can need temporary
+headroom on engines without OPFS move; RE-012 records the repeated existing-data copy
+semantics of close-per-checkpoint writable fallback and does not claim performance
+equivalence with sync handles. Quota failures remain retryable and no partial
+or unverified record becomes installed. A cross-tab Web Lock admits one disk-heavy
+acquisition, promotion, deletion, or garbage-collection path at a time; a separate
+per-job lock rejects duplicate resume/discard races. Later measured concurrency can
+be added without changing the storage contract. Pause commands fan out to the worker
+that owns an active job through an origin-local broadcast channel. `@noble/hashes`
+joins the audited production license closure and notices.
+Installed-model deletion is disabled while that acquisition lock is known busy in the
+current inventory. Refresh exposes its waiting state and remains available to detect
+an abandoned cross-tab job; local imports expose Stop and abort while queued or
+copying instead of presenting an uninterruptible zero-percent operation.
+
+Web Locks are the cross-tab coordination primitive in the Chrome-primary profile.
+Where they are absent, the same module serializes operations within one worker realm;
+cross-tab exclusion is unavailable and remains an explicitly degraded behavior rather
+than an unrecorded equivalence claim.
+
+**Reopen if:** OPFS move or sync handles regress in target Chrome; a measured engine
+cannot make writable-stream checkpoints acceptably; current GGUF introduces a
+structural version beyond v3; or M3 proves the sink/checkpoint contract insufficient
+for transformed split output.
+
 ## D-024: Canonical site moves to the root of `webai.meenan.dev`; release target stays unchanged  (2026-07-18, status: accepted)
 
 **Decision:** The canonical product URL is `https://webai.meenan.dev/`. Astro builds

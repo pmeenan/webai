@@ -1,0 +1,20 @@
+---
+import ModelManager from "../components/ModelManager";
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="Models"
+  description="Download, import, verify, inspect, and manage local GGUF models in browser storage."
+>
+  <section aria-labelledby="models-title">
+    <p class="eyebrow">Manual model acquisition</p>
+    <h1 id="models-title" class="page-title">Models</h1>
+    <p class="page-summary">
+      Move GGUF model files from Hugging Face or local disk into verified, managed
+      browser storage. Downloads resume from durable bytes and install only after
+      integrity and metadata checks pass.
+    </p>
+    <ModelManager client:load />
+  </section>
+</BaseLayout>

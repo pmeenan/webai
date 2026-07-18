@@ -25,6 +25,46 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-012: Writable-stream durability fallback repeats existing-data copy semantics  (2026-07-18, status: open)
+
+**Environment:** File System Living Standard last updated 2026-03-15, inspected
+2026-07-18; implementation timing remains unmeasured. **Repro or measurement:** For a
+worker without `createSyncAccessHandle()`, close a
+`createWritable({ keepExistingData: true })` stream after every one-MiB checkpoint.
+The standard says each new writable starts by copying the existing file into its
+temporary file. The logical existing-data volume over a 4 GiB download is therefore
+`sum(0..4095) MiB`, about 8 TiB before implementation-level copy-on-write
+optimizations. **Observed:** The fallback's durability contract necessarily repeats
+existing-data copy semantics at every checkpoint; wall-clock and physical-write costs
+vary by engine and have not been measured. **Expected:** A large resumable append path
+would durably commit new chunks without revisiting the entire prefix. **Impact on
+WebAI:** Chrome's measured worker sync-handle path avoids this cliff. The writable
+fallback is correctness-preserving but is not presented as performance-equivalent;
+measure target engines before enabling multi-GiB acquisition there, and consider
+durable chunk files if the cost is material. **Links:** [File System Standard,
+`createWritable`](https://fs.spec.whatwg.org/#api-filesystemfilehandle-createwritable),
+[D-025](decisions.md).
+
+## RE-011: IndexedDB transactions auto-close across unrelated asynchronous OPFS work  (2026-07-18, status: worked-around)
+
+**Environment:** Playwright Chromium used by M2 browser/e2e tests on Linux,
+2026-07-18. **Repro or measurement:** Start an IndexedDB read-write transaction, then
+await one or more OPFS `getFile()` operations before queueing any IDB request; also
+attach a transaction-completion listener only after awaiting the final fast request.
+Exercise both paths with a page/worker restart over a durable 1 MiB partial and with a
+152-byte local GGUF import. **Observed:** The transaction became inactive while OPFS
+was awaited, so reconciliation failed; independently, attaching terminal listeners
+late could miss completion and leave an otherwise committed import promise pending.
+**Expected:** Treating the transaction as a general async critical section would keep
+it usable until the surrounding function returned. **Impact on WebAI:** All terminal
+listeners are installed immediately after transaction creation. Reconciliation does
+every OPFS read first, computes the changes in memory, then opens a short IDB-only
+write transaction and queues its requests synchronously. Code must never hold an IDB
+transaction across network, OPFS, hashing, or parsing awaits. Browser tests cover
+both the worker-restart and fast-import cases. **Links:**
+[MDN transaction lifetime](https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction),
+[D-025](decisions.md).
+
 ## RE-010: WebNN removed named device-type selection while M1 architecture still expected it  (2026-07-17, status: worked-around)
 
 **Environment:** W3C WebNN Editor's Draft dated 26 June 2026, inspected

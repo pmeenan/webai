@@ -117,8 +117,8 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 
 ## Current status
 
-**M0 and M1 are complete.** The styled Astro shell, toolchain/CI, evidence-based
-capability report, and production deploy at https://webai.meenan.dev/ are live and
-verified. The next milestone is **M2 (manual model acquisition)**; see
+**M0 and M1 are complete. M2 implementation is review-ready and awaiting its live
+deploy verification.** Manual HF/local acquisition, restart-safe verified downloads,
+the OPFS model manager, and bounded GGUF inspection pass locally; see
 [docs/plan.md](docs/plan.md). Keep this paragraph current when plan.md milestone
 status changes (rule 5).

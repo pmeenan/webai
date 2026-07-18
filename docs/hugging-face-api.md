@@ -267,13 +267,48 @@ token.
 
 ## Implementation gates
 
+### M2 revalidation (2026-07-18)
+
+The focused implementation pass rechecked revision-pinned model info and the resolver
+with `ybelkada/tiny-random-llama-Q4_K_M-GGUF` at commit
+`429fe92916dae4839bfefb46bd0f61f50cc02c73`. Model info returned the expected
+1,627,808-byte LFS record and SHA-256
+`f06746ef9696d552d3746516558d5e9f338e581fd969158a90824e24f244169c`. The actual M2
+browser worker downloaded the complete Xet-backed payload through the commit-pinned
+resolver, accepted the exact 206 range contract, matched that digest, promoted it,
+and parsed its GGUF `llama` metadata. The opt-in Playwright reproduction is
+`WEBAI_LIVE_HF=1 corepack pnpm exec playwright test tests/e2e/models.spec.ts --grep
+'complete public'`; ordinary CI uses deterministic intercepted fixtures and does not
+make external traffic.
+
+A second model-info check used the realistic mixed repository
+`bartowski/Llama-3.2-1B-Instruct-GGUF` at commit
+`067b946cf014b7c697f3654f621d577a3e3afd1c`: its 21 siblings included GGUF weights,
+Markdown, `.gitattributes`, and an imatrix. M2 filters to `.gguf` candidates before
+requiring weight size/LFS identity, so an irrelevant or malformed companion cannot
+hide otherwise valid quants. Unsafe, duplicate, malformed, or non-LFS GGUF candidates
+still fail closed.
+
+Deterministic tests cover hostile metadata/path/size/hash listings, complete/incomplete
+shard grouping, an end-to-end wrong-status response plus a unit-level range/length
+rejection matrix, Git-blob framing, finite jittered 429 backoff,
+interruption after a one-MiB durable write, page/worker restart, resume from actual
+OPFS length, final digest mismatch, local import/restart/delete, recoverable interrupted
+deletion, idempotent install, and malformed/truncated/oversized/duplicate GGUF metadata.
+M2 selects only LFS SHA-256 GGUF weight sets; Git-managed runtime companions remain
+deferred until an adapter supplies an explicit companion manifest rather than a
+filename heuristic. Additional storage tests cover reconcile/delete overlap,
+per-record oversized-partial degradation, orphan cleanup, and repair of a corrupt
+content-addressed blob from its verified partial. Local imports re-hash stored OPFS
+bytes before promotion.
+
 - **M2:** recheck the model-info/tree response shape and CORS; fixture-test hostile
   metadata, pagination, shard grouping, and the format-aware classifier that separates
   weight artifacts/shards from Git-managed companions. Filenames/tags are untrusted
   hints and an unknown role fails closed rather than silently becoming a companion.
   Also test missing/wrong integrity kinds, all range rejection cases, interruption
   after durable writes, resume after worker/page restart, final digest mismatch,
-  Git-blob companion verification, and atomic promotion. Run at least one complete
+  Git-blob identity framing, and promotion visibility. Run at least one complete
   public LFS/Xet artifact through the measured path.
 - **M5:** recheck search parameters, cursor behavior, current rate-limit/CORS policy,
   and quant/file naming assumptions. Test a valid-token gated repo and signed redirect

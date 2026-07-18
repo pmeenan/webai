@@ -1,0 +1,354 @@
+import { createHash } from "node:crypto";
+import { expect, test, type Page, type Route } from "@playwright/test";
+
+const commit = "b".repeat(40);
+
+function u32(value: number): Buffer {
+  const bytes = Buffer.alloc(4);
+  bytes.writeUInt32LE(value);
+  return bytes;
+}
+
+function u64(value: number): Buffer {
+  const bytes = Buffer.alloc(8);
+  bytes.writeBigUInt64LE(BigInt(value));
+  return bytes;
+}
+
+function ggufString(value: string): Buffer {
+  const bytes = Buffer.from(value, "utf8");
+  return Buffer.concat([u64(bytes.byteLength), bytes]);
+}
+
+function ggufEntry(key: string, type: number, value: Buffer): Buffer {
+  return Buffer.concat([ggufString(key), u32(type), value]);
+}
+
+function ggufFixture(size?: number): Buffer {
+  const header = Buffer.concat([
+    Buffer.from("GGUF"),
+    u32(3),
+    u64(0),
+    u64(3),
+    ggufEntry("general.architecture", 8, ggufString("llama")),
+    ggufEntry("general.name", 8, ggufString("Playwright fixture")),
+    ggufEntry("general.file_type", 4, u32(15)),
+  ]);
+  if (size === undefined) return header;
+  const fixture = Buffer.alloc(size);
+  header.copy(fixture);
+  return fixture;
+}
+
+async function routeModelInfo(
+  page: Page,
+  fixture: Buffer,
+  filename = "fixture-Q4_K_M.gguf",
+  digest = createHash("sha256").update(fixture).digest("hex"),
+): Promise<void> {
+  await page.route("https://huggingface.co/api/models/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({
+        sha: commit,
+        siblings: [
+          {
+            rfilename: filename,
+            size: fixture.byteLength,
+            blobId: "c".repeat(40),
+            lfs: { size: fixture.byteLength, sha256: digest },
+          },
+        ],
+      }),
+    });
+  });
+}
+
+async function fulfillRange(
+  route: Route,
+  fixture: Buffer,
+  start: number,
+  end: number,
+): Promise<void> {
+  await route.fulfill({
+    status: 206,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Expose-Headers": "Content-Range, Content-Length",
+      "Content-Type": "application/octet-stream",
+      "Content-Range": `bytes ${start}-${end}/${fixture.byteLength}`,
+      "Content-Length": String(end - start + 1),
+    },
+    body: fixture.subarray(start, end + 1),
+  });
+}
+
+async function holdAcquisitionLock(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const state = window as Window & { __webaiTestLockHeld?: boolean };
+    void navigator.locks.request("webai-model-acquisition-v1", async () => {
+      state.__webaiTestLockHeld = true;
+      await new Promise<void>(() => undefined);
+    });
+  });
+  await expect
+    .poll(
+      async () =>
+        await page.evaluate(
+          () => (window as Window & { __webaiTestLockHeld?: boolean }).__webaiTestLockHeld === true,
+        ),
+    )
+    .toBe(true);
+}
+
+test("resumes a durable range after a page and worker restart, then inspects the verified GGUF", async ({
+  page,
+}) => {
+  const fixture = ggufFixture(2 * 1024 * 1024);
+  await routeModelInfo(page, fixture);
+  const starts: number[] = [];
+  let allowResume = false;
+  await page.route(
+    `https://huggingface.co/fixture/model/resolve/${commit}/fixture-Q4_K_M.gguf`,
+    async (route) => {
+      const header = route.request().headers().range ?? "";
+      const match = header.match(/^bytes=(\d+)-$/u);
+      if (match === null) {
+        await route.abort();
+        return;
+      }
+      const start = Number(match[1]);
+      starts.push(start);
+      if (start === 0) {
+        await fulfillRange(route, fixture, 0, 1024 * 1024 - 1);
+        return;
+      }
+      while (!allowResume) await new Promise((resolve) => setTimeout(resolve, 25));
+      await fulfillRange(route, fixture, start, fixture.byteLength - 1);
+    },
+  );
+
+  await page.goto("./models/");
+  await page.getByLabel("Model ID or URL").fill("fixture/model");
+  await page.getByRole("button", { name: "List files" }).click();
+  const resolved = page.getByTestId("resolved-repository");
+  await expect(resolved.getByText(commit)).toBeVisible();
+  await resolved.getByRole("button", { name: "Download" }).click();
+  await expect(page.getByText("1.0 MiB of 2.0 MiB durable", { exact: false })).toBeVisible();
+
+  await page.reload();
+  const partial = page.locator("[data-job-id]");
+  await expect(partial.getByText("1.0 MiB of 2.0 MiB durable", { exact: false })).toBeVisible();
+  await expect(partial.getByRole("button", { name: "Resume and verify" })).toBeVisible();
+  allowResume = true;
+  await partial.getByRole("button", { name: "Resume and verify" }).click();
+
+  const installed = page.locator("[data-model-id]");
+  await expect(installed).toContainText("fixture/model · Q4_K_M");
+  await expect(installed.getByText("installed", { exact: true })).toBeVisible();
+  await installed.getByText("Inspect files and metadata").click();
+  await expect(installed.getByRole("rowheader", { name: "general.architecture" })).toBeVisible();
+  await expect(installed.getByRole("cell", { name: "llama" })).toBeVisible();
+  expect(starts[0]).toBe(0);
+  expect(starts.slice(1).every((start) => start === 1024 * 1024)).toBe(true);
+});
+
+test("fails closed on a non-range response and does not promote the artifact", async ({ page }) => {
+  const fixture = ggufFixture();
+  await routeModelInfo(page, fixture);
+  await page.route(
+    `https://huggingface.co/fixture/model/resolve/${commit}/fixture-Q4_K_M.gguf`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: { "Access-Control-Allow-Origin": "*" },
+        body: fixture,
+      });
+    },
+  );
+  await page.goto("./models/");
+  await page.getByLabel("Model ID or URL").fill("fixture/model");
+  await page.getByRole("button", { name: "List files" }).click();
+  await page.getByTestId("resolved-repository").getByRole("button", { name: "Download" }).click();
+  await expect(page.getByRole("alert")).toContainText("exact partial response was required");
+  await expect(page.locator("[data-model-id]")).toHaveCount(0);
+  await expect(page.locator("[data-job-id]")).toContainText("failed");
+});
+
+test("retains a failed partial but never promotes bytes with the wrong final digest", async ({
+  page,
+}) => {
+  const fixture = ggufFixture();
+  await routeModelInfo(page, fixture, "fixture-Q4_K_M.gguf", "d".repeat(64));
+  await page.route(
+    `https://huggingface.co/fixture/model/resolve/${commit}/fixture-Q4_K_M.gguf`,
+    async (route) => {
+      await fulfillRange(route, fixture, 0, fixture.byteLength - 1);
+    },
+  );
+  await page.goto("./models/");
+  await page.getByLabel("Model ID or URL").fill("fixture/model");
+  await page.getByRole("button", { name: "List files" }).click();
+  await page.getByTestId("resolved-repository").getByRole("button", { name: "Download" }).click();
+  await expect(page.getByRole("alert")).toContainText("Integrity verification failed");
+  await expect(page.locator("[data-model-id]")).toHaveCount(0);
+  const partial = page.locator("[data-job-id]");
+  await expect(partial).toContainText("failed");
+  await expect(partial.getByRole("button", { name: "Resume and verify" })).toHaveCount(0);
+  await partial.getByRole("button", { name: "Discard partial" }).click();
+  await partial.getByRole("button", { name: "Confirm discard" }).click();
+  await expect(partial).toHaveCount(0);
+});
+
+test("treats a queued first request as active instead of offering concurrent resume", async ({
+  page,
+}) => {
+  const fixture = ggufFixture();
+  await routeModelInfo(page, fixture);
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(
+    `https://huggingface.co/fixture/model/resolve/${commit}/fixture-Q4_K_M.gguf`,
+    async (route) => {
+      await held;
+      await fulfillRange(route, fixture, 0, fixture.byteLength - 1).catch(() => undefined);
+    },
+  );
+  await page.goto("./models/");
+  await page.getByLabel("Model ID or URL").fill("fixture/model");
+  await page.getByRole("button", { name: "List files" }).click();
+  await page.getByTestId("resolved-repository").getByRole("button", { name: "Download" }).click();
+  const partial = page.locator("[data-job-id]");
+  await expect(partial.getByRole("button", { name: "Pause" })).toBeVisible();
+  await expect(partial.getByRole("button", { name: "Resume and verify" })).toHaveCount(0);
+  await expect(partial.getByRole("button", { name: "Discard partial" })).toHaveCount(0);
+  await partial.getByRole("button", { name: "Pause" }).click();
+  release?.();
+  await expect(partial).toContainText("paused");
+});
+
+test("imports and deletes a local GGUF without network traffic", async ({ page }) => {
+  const unexpectedRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().startsWith("https://huggingface.co/")) unexpectedRequests.push(request.url());
+  });
+  await page.goto("./models/");
+  await expect(page.getByText("No managed models yet")).toBeVisible();
+  const opfsMoveAvailable = await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const handle = await root.getFileHandle("webai-m2-move-probe", { create: true });
+    const available =
+      typeof (handle as FileSystemFileHandle & { move?: unknown }).move === "function";
+    await root.removeEntry("webai-m2-move-probe");
+    return available;
+  });
+  expect(opfsMoveAvailable).toBe(true);
+  await page.getByLabel("Choose GGUF files").setInputFiles({
+    name: "local-Q4_K_M.gguf",
+    mimeType: "application/octet-stream",
+    buffer: ggufFixture(),
+  });
+  const installed = page.locator("[data-model-id]");
+  await expect(installed).toContainText("local-Q4_K_M.gguf");
+  await installed.getByText("Inspect files and metadata").click();
+  await expect(installed).toContainText("Playwright fixture");
+  await installed.getByRole("button", { name: "Delete model" }).click();
+  await installed.getByRole("button", { name: "Confirm delete" }).click();
+  await expect(installed).toHaveCount(0);
+  await expect(page.getByText("No managed models yet")).toBeVisible();
+  expect(unexpectedRequests).toEqual([]);
+});
+
+test("reports a malformed local file and never installs it", async ({ page }) => {
+  await page.goto("./models/");
+  await expect(page.getByText("No managed models yet")).toBeVisible();
+  await page.getByLabel("Choose GGUF files").setInputFiles({
+    name: "hostile.gguf",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("not a gguf"),
+  });
+  await expect(page.getByRole("alert")).toContainText("does not start with the GGUF magic bytes");
+  await expect(page.locator("[data-model-id]")).toHaveCount(0);
+});
+
+test("keeps an interrupted local import as explicit needs-source state", async ({ page }) => {
+  await page.goto("./models/");
+  await expect(page.getByText("No managed models yet")).toBeVisible();
+  await holdAcquisitionLock(page);
+  await page.getByLabel("Choose GGUF files").setInputFiles({
+    name: "interrupted-Q4_K_M.gguf",
+    mimeType: "application/octet-stream",
+    buffer: ggufFixture(2 * 1024 * 1024),
+  });
+  const partial = page.locator("[data-job-id]");
+  await expect(partial).toContainText("Partial local import");
+  await partial.getByRole("button", { name: "Stop import" }).click();
+  await expect(partial).toContainText("needs-source");
+  await page.reload();
+  await expect(partial).toContainText("needs-source");
+  await expect(partial.getByRole("button", { name: "Resume and verify" })).toHaveCount(0);
+  await partial.getByRole("button", { name: "Discard partial" }).click();
+  await partial.getByRole("button", { name: "Confirm discard" }).click();
+  await expect(partial).toHaveCount(0);
+});
+
+test("links resolve failures to the source field and identifies pasted-file selection", async ({
+  page,
+}) => {
+  const fixture = ggufFixture();
+  await routeModelInfo(page, fixture);
+  await page.goto("./models/");
+  const input = page.getByLabel("Model ID or URL");
+  await input.fill("invalid");
+  await page.getByRole("button", { name: "List files" }).click();
+  await expect(input).toHaveAttribute("aria-invalid", "true");
+  await expect(page.locator("#model-source-error")).toContainText("owner/model");
+
+  await input.fill("https://huggingface.co/fixture/model/blob/main/fixture-Q4_K_M.gguf");
+  await page.getByRole("button", { name: "List files" }).click();
+  await expect(page.getByText("From pasted file URL")).toBeVisible();
+});
+
+test("renders a terminal unavailable state when the model worker cannot start", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "Worker", {
+      configurable: true,
+      value: class BrokenWorker {
+        constructor() {
+          throw new Error("worker unavailable");
+        }
+      },
+    });
+  });
+  await page.goto("./models/");
+  await expect(page.getByText("background worker could not start")).toBeVisible();
+  await expect(page.getByRole("button", { name: "List files" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Refresh" })).toBeDisabled();
+});
+
+test("downloads and verifies a complete public Hugging Face LFS/Xet-backed GGUF", async ({
+  page,
+}) => {
+  test.skip(
+    process.env.WEBAI_LIVE_HF !== "1",
+    "Set WEBAI_LIVE_HF=1 for the focused external-contract check.",
+  );
+  await page.goto("./models/");
+  await page
+    .getByLabel("Model ID or URL")
+    .fill("ybelkada/tiny-random-llama-Q4_K_M-GGUF@429fe92916dae4839bfefb46bd0f61f50cc02c73");
+  await page.getByRole("button", { name: "List files" }).click();
+  await expect(page.getByTestId("resolved-repository")).toContainText("1.6 MiB");
+  await page.getByTestId("resolved-repository").getByRole("button", { name: "Download" }).click();
+  const installed = page.locator("[data-model-id]");
+  await expect(installed).toContainText("ybelkada/tiny-random-llama-Q4_K_M-GGUF · Q4_K_M", {
+    timeout: 60_000,
+  });
+  await expect(installed).toContainText("llama");
+});
