@@ -25,6 +25,24 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-010: WebNN removed named device-type selection while M1 architecture still expected it  (2026-07-17, status: worked-around)
+
+**Environment:** W3C WebNN Editor's Draft dated 26 June 2026, inspected
+2026-07-17; M1 implementation and Playwright Chromium 149 browser probes on Linux.
+**Repro or measurement:** Search the current draft WebIDL for `deviceType`, then
+inspect `MLContextOptions`, `ML.createContext()`, and `MLContext.accelerated`. Compare
+that surface with the M0 feature/architecture phrase “WebNN device types.”
+**Observed:** The draft contains no `deviceType`; context options are
+`powerPreference` and `accelerated`, and the created context reports only effective
+`accelerated` state. The draft explicitly says these options remain under active
+development. **Expected:** The architecture's promised CPU/GPU/NPU capability rows
+would have a current standards surface that can select and verify those identities.
+**Impact on WebAI:** D-021 and M1 now probe a default worker context, requested and
+effective acceleration, without inventing device identity. M7 adapter initialization
+must record the actual backend evidence its runtime exposes and recheck the spec.
+**Links:** [current WebNN specification](https://webmachinelearning.github.io/webnn/),
+[D-021](decisions.md).
+
 ## RE-009: Hugging Face's OpenAPI schema omits core model discovery routes  (2026-07-17, status: open)
 
 **Environment:** Live Hugging Face schema and API plus official `huggingface_hub`

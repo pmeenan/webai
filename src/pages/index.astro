@@ -1,0 +1,55 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const base = import.meta.env.BASE_URL;
+---
+
+<BaseLayout
+  title="In-browser LLM workbench"
+  description="Discover, run, and measure language models locally in your browser."
+>
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="hero-copy">
+      <p class="eyebrow">In-browser LLM workbench</p>
+      <h1 id="hero-title" class="hero-title">Measure browser AI on your hardware.</h1>
+      <p class="hero-summary">
+        Discover, download, and compare language models across browser runtimes and
+        execution backends. Models, chats, and results remain on this device.
+      </p>
+      <div class="hero-actions">
+        <a class="button-primary" href={`${base}capabilities/`}>Inspect this browser</a>
+        <a class="button-secondary" href={`${base}about/`}>How WebAI works</a>
+      </div>
+    </div>
+    <div
+      class="hero-visual"
+      role="img"
+      aria-label=""
+      aria-hidden="true"
+      data-testid="arachne-hero"
+    >
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="foundation-title">
+    <h2 id="foundation-title" class="section-heading">Built for evidence, not guesses</h2>
+    <p class="section-summary">
+      WebAI exposes the environment it measures, keeps the data local, and reports
+      unsupported paths with an actionable reason.
+    </p>
+    <div class="card-grid">
+      <article class="feature-card">
+        <h3>Capability first</h3>
+        <p>See which browser APIs and execution backends are actually available here.</p>
+      </article>
+      <article class="feature-card">
+        <h3>Local by design</h3>
+        <p>Models, conversations, settings, and benchmark results stay in browser storage.</p>
+      </article>
+      <article class="feature-card">
+        <h3>Measured results</h3>
+        <p>Compare runtimes and quantizations with repeatable metrics from this machine.</p>
+      </article>
+    </div>
+  </section>
+</BaseLayout>

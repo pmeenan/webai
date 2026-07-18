@@ -17,7 +17,7 @@ quantization, and library for their needs with real numbers from their own hardw
   present; other browsers degrade gracefully, and the differences become published
   findings.
 
-Hosted at https://meenan.dev/webai/ (once launched). Licensed under
+Hosted at https://webai.meenan.dev/. Licensed under
 [Apache-2.0](LICENSE).
 
 Almost all code in this repository is written by AI agents working from the project
@@ -25,9 +25,38 @@ documentation, directed and reviewed by a human.
 
 ## Status
 
-Pre-code: **M0 (plan the plan) is complete**; next up is **M1 (shell, toolchain,
-live deploy)** — see [docs/plan.md](docs/plan.md). Application scaffolding lands
-in M1; until then there is nothing to build or run.
+**M0 and M1 are complete.** The styled shell and evidence-based browser capability
+report are deployed. Next up is **M2 (manual model acquisition)** — see
+[docs/plan.md](docs/plan.md).
+
+## Develop
+
+Requirements: Node 24.16+ and Corepack.
+
+```sh
+corepack pnpm install
+corepack pnpm dev
+```
+
+The development and preview servers emit the same COOP/COEP isolation headers used
+in production. The full local gate is:
+
+```sh
+corepack pnpm exec playwright install chromium
+corepack pnpm check
+corepack pnpm build
+```
+
+`pnpm check` runs format-check, lint, strict Astro/TypeScript checking, Vitest browser
+tests, Playwright end-to-end tests, and the full dependency-license audit, including
+verification that the deployable third-party notice file matches the pinned production
+closure. Regenerate that file after dependency changes with
+`corepack pnpm license:notices`. The production deploy is intentionally explicit:
+`corepack pnpm deploy` runs that full gate, rebuilds the release artifact, rsyncs
+`dist/` into a staged remote release, atomically promotes it under a remote transaction
+lock, and rolls back if public route, asset, isolation-header, or controller checks
+fail. The deployment host requires `flock`, Python 3, and Linux
+`renameat2(RENAME_EXCHANGE)` for the one-time legacy-directory migration.
 
 ## Start here
 

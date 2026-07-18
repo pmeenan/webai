@@ -5,7 +5,7 @@ Hugging Face directly in the browser — across runtimes (wllama, transformers.j
 others) and execution backends (WASM on CPU, WebGPU, WebNN) — plus browser-managed
 models (Chrome's built-in Prompt API / Gemini Nano) as a separate, no-download path —
 so they can pick the right model, quantization, and library for their needs.
-Hosted at https://meenan.dev/webai/. Almost all code is written by AI agents working
+Hosted at https://webai.meenan.dev/. Almost all code is written by AI agents working
 from the project documentation, directed and reviewed by a human.
 
 **Read this file first, then pull docs on demand via the "Doc map" below — don't read
@@ -19,8 +19,9 @@ the case in [docs/decisions.md](docs/decisions.md) and updating the affected doc
 Until then, these govern.
 
 - **Static site, no server.** The product builds to a static site (Astro) deployed by
-  rsync to https://meenan.dev/webai/ under the `/webai/` base path. No server-side
-  application code, no backend APIs, no accounts. The server config is under our
+  rsync to the root of https://webai.meenan.dev/ (the rsync target remains
+  `plex:/var/www/meenan.dev/webai/`). No server-side application code, no backend
+  APIs, no accounts. The server config is under our
   control, so response headers (COOP/COEP etc.) may be configured — but that is a
   deploy-time decision to record, not something to assume.
 - **Everything runs locally.** Models, chats, benchmark results, and settings live in
@@ -57,9 +58,14 @@ Until then, these govern.
 | Path    | What lives there                                        |
 | ------- | ------------------------------------------------------- |
 | `docs/` | Vision, plan, architecture, decisions, features, rough edges, workflow |
+| `src/` | Astro pages/layouts, React islands, semantic styles/assets, capability layer |
+| `public/` | Static favicon and redistributable third-party license texts |
+| `tests/` | Playwright end-to-end tests |
+| `scripts/` | License-closure audit and production rsync deploy helper |
+| `.github/workflows/` | CI gates for format, lint, types, browser tests, licenses, build |
 
-The application scaffolding (Astro project, `src/`, tests, CI) lands in M1 — update
-this table when it does.
+Root toolchain configuration pins Astro/React/TypeScript/Tailwind, Vitest browser
+mode, Playwright, ESLint, Biome, and pnpm.
 
 ## Doc map — pull what the task needs, not everything
 
@@ -75,7 +81,7 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 | [docs/decisions.md](docs/decisions.md) | Settled choices (D-NNN). Scan headings and read only the entries your task touches |
 | [docs/rough-edges.md](docs/rough-edges.md) | Platform/library findings log (RE-NNN). Grep before adding a finding or debugging browser weirdness |
 | [docs/runtime-survey.md](docs/runtime-survey.md) | M0 runtime/backend evidence snapshot, capability comparison, and adapter-design inputs |
-| [docs/hosting-constraints.md](docs/hosting-constraints.md) | Hosting/nginx, cross-origin isolation, HF CORS, base-path, and shared-origin evidence |
+| [docs/hosting-constraints.md](docs/hosting-constraints.md) | Hosting/nginx, isolation, HF CORS, and dedicated-origin migration evidence |
 | [docs/hugging-face-api.md](docs/hugging-face-api.md) | HF discovery/file metadata evidence and the D-013 integrity/resume contract for M2/M5 |
 | [docs/design-brief.md](docs/design-brief.md) | Look-and-feel direction ("Neon horizon"), theming/token approach, mascot concept — seeds the M1 Design.md |
 
@@ -111,8 +117,8 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 
 ## Current status
 
-**M0 (plan the plan) is complete** — vision, feature matrix, architecture draft,
-milestone ladder, toolchain (D-016), and design direction (D-017) are settled. The
-next milestone is **M1 (shell, toolchain, live deploy)**; see
-[docs/plan.md](docs/plan.md). No application code exists yet; scaffolding is M1.
-Keep this paragraph current when plan.md milestone status changes (rule 5).
+**M0 and M1 are complete.** The styled Astro shell, toolchain/CI, evidence-based
+capability report, and production deploy at https://webai.meenan.dev/ are live and
+verified. The next milestone is **M2 (manual model acquisition)**; see
+[docs/plan.md](docs/plan.md). Keep this paragraph current when plan.md milestone
+status changes (rule 5).

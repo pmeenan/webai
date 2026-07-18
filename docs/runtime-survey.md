@@ -14,9 +14,10 @@ date; a browser API uses its current shipped surface.
 
 "Fully client-side" also applies to acquisition under D-005. Runtime code, workers,
 wasm, and compiled model-library binaries are version-pinned, license-audited WebAI
-assets served from `/webai/`; an adapter may not use a library's default third-party
-CDN or GitHub binary URL. User-selected model bytes may come from Hugging Face or a
-local import, and Prompt API remains the browser-managed exception already recorded.
+assets served from `https://webai.meenan.dev/`; an adapter may not use a library's
+default third-party CDN or GitHub binary URL. User-selected model bytes may come from
+Hugging Face or a local import, and Prompt API remains the browser-managed exception
+already recorded.
 
 "Structured" below distinguishes constrained decoding from prompt conventions. Tool
 calling alone does not prove that arbitrary JSON Schema output is constrained.
@@ -123,9 +124,9 @@ runtime contract needs these explicit dimensions:
 
 Heavy runtime packages and model catalogs are lazy-loaded behind their capability
 gates. Stable environment probes include wasm SIMD, JSPI, Memory64, wasm threads,
-`crossOriginIsolated`, WebGPU features/limits, and WebNN device types; volatile model
-availability and device loss remain the second tier already described in
-[architecture.md](architecture.md).
+`crossOriginIsolated`, WebGPU features/limits, and current-spec WebNN default-context
+and effective-acceleration evidence; volatile model availability and device loss remain
+the second tier already described in [architecture.md](architecture.md).
 
 Reproduction metadata records both wrapper and engine versions. In particular,
 Transformers.js 4.2.0 embeds a development ORT build, so its behavior must not be

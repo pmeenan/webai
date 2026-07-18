@@ -1,0 +1,7 @@
+allowBuilds:
+  esbuild: true
+ignoredOptionalDependencies:
+  - sharp
+minimumReleaseAgeExclude:
+  - astro@7.1.1
+  - lucide-react@1.25.0

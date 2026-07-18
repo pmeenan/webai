@@ -1,0 +1,19 @@
+---
+import CapabilityReport from "../components/CapabilityReport";
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="Browser capabilities"
+  description="Measured browser, worker, compute, and storage capabilities for WebAI."
+>
+  <header>
+    <p class="eyebrow">Environment diagnostics</p>
+    <h1 class="page-title">Browser capabilities</h1>
+    <p class="page-summary">
+      These are direct measurements from this page and short-lived workers. Unknown means a
+      probe could not produce conclusive evidence; it does not mean incompatible.
+    </p>
+  </header>
+  <CapabilityReport client:load />
+</BaseLayout>

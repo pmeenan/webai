@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/browser-globals.boundary.ts"],
+  "exclude": ["dist", "node_modules", "src/**/*.test.ts", "src/env.d.ts"]
+}

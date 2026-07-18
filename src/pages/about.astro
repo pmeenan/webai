@@ -1,0 +1,63 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const base = import.meta.env.BASE_URL;
+---
+
+<BaseLayout
+  title="About"
+  description="How WebAI measures local browser AI while keeping models and results on-device."
+>
+  <header>
+    <p class="eyebrow">Project details</p>
+    <h1 class="page-title">About WebAI</h1>
+    <p class="page-summary">
+      WebAI is a static, fully client-side workbench for evaluating language models in the
+      browser with evidence from the browser and hardware in front of you.
+    </p>
+  </header>
+
+  <div class="content-stack">
+    <section class="content-card" aria-labelledby="local-title">
+      <h2 id="local-title">Everything runs locally</h2>
+      <p>
+        There are no accounts, analytics, or telemetry. Models, chats, benchmark results, and
+        settings remain in browser-managed storage. Network requests happen only when you ask
+        WebAI to query or download from Hugging Face, or initiate a browser-managed model
+        download.
+      </p>
+    </section>
+
+    <section class="content-card" aria-labelledby="measure-title">
+      <h2 id="measure-title">Capabilities are measured</h2>
+      <p>
+        WebAI probes individual browser capabilities instead of identifying a browser by name.
+        Missing or restricted features are disabled with an explanation, while the rest of the
+        workbench remains available.
+      </p>
+    </section>
+
+    <section class="content-card" aria-labelledby="license-title">
+      <h2 id="license-title">Open source and font licenses</h2>
+      <p>
+        WebAI is Apache-2.0 licensed. Its self-hosted fonts retain their upstream copyright
+        notices and SIL Open Font License texts:
+      </p>
+      <ul>
+        <li>
+          <a class="prose-link" href={`${base}licenses/THIRD-PARTY-NOTICES.txt`}>
+            Third-party software notices
+          </a>
+        </li>
+        <li>
+          <a class="prose-link" href={`${base}licenses/Inter-OFL-1.1.txt`}>Inter OFL-1.1</a>
+        </li>
+        <li>
+          <a class="prose-link" href={`${base}licenses/JetBrains-Mono-OFL-1.1.txt`}>
+            JetBrains Mono OFL-1.1
+          </a>
+        </li>
+      </ul>
+    </section>
+  </div>
+</BaseLayout>

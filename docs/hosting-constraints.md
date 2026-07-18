@@ -1,14 +1,30 @@
 # Hosting constraints spike
 
-**Status:** complete evidence snapshot, checked 2026-07-17 (America/New_York).
-This is the M0 input for D-012 and the M1 deploy pipeline, not a substitute for
-rechecking the live deployment after its first build.
+**Status:** original M0/M1 evidence checked 2026-07-17 through 2026-07-18; dedicated-
+origin migration accepted in D-024 on 2026-07-18. Historical results below remain
+dated evidence, not proof of the new origin.
 
-## Outcome
+## Current outcome (D-024)
 
-- Keep the canonical URL at `https://meenan.dev/webai/`. The path maps directly to
-  the existing static document root and no hosting, isolation, Hugging Face CORS, or
-  service-worker constraint requires a dedicated origin.
+- The canonical URL is `https://webai.meenan.dev/`; Astro, application routes,
+  content-hashed assets, notices, and the future service worker are rooted at `/`.
+- The deploy filesystem does not move. D-023 still stages releases under
+  `/var/www/meenan.dev/` and promotes `/var/www/meenan.dev/webai` transactionally.
+- COOP `same-origin` and COEP `require-corp` remain required on successful HTML,
+  assets/workers, and errors. The dedicated vhost owns those headers without affecting
+  `www.meenan.dev`.
+- WebAI now has a dedicated browser origin/storage trust boundary. Existing
+  `meenan.dev` storage, persistence, permissions, and service-worker state do not
+  migrate; the pre-M2 cutover deliberately accepts resetting the M1 theme preference.
+- The cutover must repeat direct-route, asset, notice, error-header, page/worker
+  isolation, shared-memory, OPFS, and HF CORS checks from the new origin.
+
+## Original M0 outcome (origin choice superseded by D-024)
+
+- The original decision kept the canonical URL at `https://meenan.dev/webai/`. The
+  path mapped directly to the existing static document root, and no hosting,
+  isolation, Hugging Face CORS, or service-worker constraint required a dedicated
+  origin.
 - Serve WebAI with `Cross-Origin-Opener-Policy: same-origin` and
   `Cross-Origin-Embedder-Policy: require-corp`. This makes
   `crossOriginIsolated === true`, enabling `SharedArrayBuffer` for multithreaded wasm
@@ -17,9 +33,9 @@ rechecking the live deployment after its first build.
   explicit CORS-mode `fetch()` to Hugging Face, and that path works under the stricter
   `require-corp` policy. Allowing accidental no-CORS subresources adds no product
   capability and would make D-005's network boundary harder to enforce.
-- Explicitly accept that `/webai/` is not a browser storage or security boundary.
-  Namespacing prevents accidental collisions, but every same-origin application can
-  reach the same storage and contributes to the same quota.
+- The original decision explicitly accepted that `/webai/` was not a browser storage
+  or security boundary. Namespacing prevented accidental collisions, but every same-
+  origin application could reach the same storage and contributed to the same quota.
 
 The current platform contract is described by the
 [HTML cross-origin isolation model](https://html.spec.whatwg.org/multipage/document-sequences.html#bcg-cross-origin-isolation)
@@ -32,36 +48,41 @@ CORS check ([COOP/COEP deployment guide](https://web.dev/articles/coop-coep)).
 Read-only inspection of the production host established the following rather than
 assuming a generic static server:
 
-- `meenan.dev` is served by nginx 1.30.2 on the SSH host alias `plex` from
-  `/var/www/meenan.dev/`. The directory is writable by the deploy user; the nginx
-  vhost is root-owned and needs an interactive admin/sudo step to change and reload.
-- `/var/www/meenan.dev/webai/` does not exist yet. The intended deploy shape is an
-  Astro static build rsynced to `plex:/var/www/meenan.dev/webai/`; M1 creates and
-  versions the deploy command.
-- The current vhost has regex locations for HTML and static extensions followed by a
-  generic `try_files $uri $uri/ =404`. A plain `location /webai/` is insufficient:
-  nginx would select the regex location for files such as `.html` and `.js`, losing
-  headers defined only on the prefix. The WebAI prefix must use `^~`, or every
-  competing location must repeat the headers. See nginx's
+- nginx 1.30.2 on the SSH host alias `plex` serves `webai.meenan.dev` from
+  `/var/www/meenan.dev/webai/`. The release parent is writable by the deploy user;
+  the vhost is root-owned and needs an interactive admin/sudo step to change/reload.
+- M1 initially created `/var/www/meenan.dev/webai/` as a direct rsync target. D-023
+  replaces in-place updates with sibling `.webai-release-*` directories and promotes
+  a staged build through the `webai` symlink, retaining `.webai-previous` for
+  rollback.
+- The dedicated vhost has server-level isolation headers, an HTML regex that defines
+  its own `add_header Cache-Control`, a static-extension regex, and root-level
+  `try_files $uri $uri/ =404`. nginx does not inherit parent `add_header` directives
+  into a child context that defines any `add_header`, so the HTML location must repeat
+  both isolation headers. See nginx's
   [location selection rules](https://nginx.org/en/docs/http/ngx_http_core_module.html#location)
   and [`add_header` inheritance rules](https://nginx.org/en/docs/http/ngx_http_headers_module.html#add_header).
 
-The minimum isolation block is:
+The relevant minimum is:
 
 ```nginx
-location ^~ /webai/ {
+server {
     add_header Cross-Origin-Opener-Policy "same-origin" always;
     add_header Cross-Origin-Embedder-Policy "require-corp" always;
     try_files $uri $uri/ =404;
+
+    location ~* \.(html|htm)$ {
+        add_header Cache-Control "no-cache, must-revalidate" always;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "require-corp" always;
+    }
 }
 ```
 
-`^~` deliberately bypasses the vhost's existing regex cache rules. The versioned M1
-configuration may add WebAI-specific HTML and hashed-asset caching inside this block,
-but it must preserve both headers on every document and relevant worker response,
-including errors and offline/synthetic navigations. Emitting both headers on every
-`/webai/` response is a simple safe implementation. The root placeholder must remain
-unaffected.
+The static regex currently inherits the server headers; successful JS/font probes
+confirmed that behavior. The explicit HTML duplication is load-bearing because its
+cache header suppresses inheritance. Any future cache/location changes must preserve
+both headers on documents, workers, assets, errors, and offline/synthetic navigation.
 
 ## Hugging Face CORS experiment
 
@@ -121,11 +142,12 @@ The tested endpoint classes match Hugging Face's distinction between
 M1 must rerun the browser probe from the deployed origin because CDN and CORS behavior
 are external state, not a permanent guarantee.
 
-## Base path and shared-origin storage
+## Root base and dedicated-origin storage
 
-Astro must build with base `/webai` and produce URLs rooted below `/webai/`; the
-server maps those URLs directly to the rsync subtree. Route output must work with the
-existing static `try_files` behavior—there is no server-side application fallback.
+Astro builds with base `/` and produces root-relative routes and assets for
+`https://webai.meenan.dev/`; nginx maps that origin root directly to the unchanged
+rsync release symlink. Route output must work with static `try_files` behavior—there
+is no server-side application fallback.
 
 Browser storage keys do not contain a URL path. The
 [Storage Standard](https://storage.spec.whatwg.org/#storage-keys),
@@ -133,27 +155,42 @@ Browser storage keys do not contain a URL path. The
 [OPFS](https://fs.spec.whatwg.org/#accessing-the-bucket-file-system) therefore make
 these consequences explicit:
 
-- OPFS, IndexedDB, Cache Storage, `localStorage`, quota estimates, and persistence are
-  shared by all content at `https://meenan.dev`. Use a top-level `webai` OPFS
-  directory plus `webai`-prefixed database/cache names and `localStorage` keys for
-  collision hygiene; those names are not a security boundary.
+- OPFS, IndexedDB, Cache Storage, `localStorage`, permissions, quota estimates, and
+  persistence belong to the `https://webai.meenan.dev` storage key rather than the
+  former `https://meenan.dev` origin. Existing browser state cannot transfer through
+  client code. Keep the top-level `webai` OPFS directory plus versioned/prefixed
+  database, cache, and local-storage names for ownership and migration hygiene.
 - `navigator.storage.estimate()` is an origin-level, implementation-defined estimate,
   not WebAI-only accounting. WebAI's own manifest must provide per-model/runtime byte
   accounting. `persist()` applies to the origin's default bucket, can be denied, and
   does not remove quota failure or user-clearing cases.
-- Any same-origin script can read or alter WebAI data. This includes locally stored HF
-  tokens once that feature lands, so all content on the origin remains in one trust
-  boundary. A future independently controlled or untrusted app belongs on another
-  origin.
-- Put the future service worker at `/webai/sw.js` with scope `/webai/` and do not emit
-  a broader `Service-Worker-Allowed` header. This contains normal request handling to
-  the product path, although the Service Worker specification correctly warns that
-  [path restriction is not a hard security boundary](https://w3c.github.io/ServiceWorker/#path-restriction).
-  Cache names remain origin-global, and a future root-scoped worker can interact with
-  this path, so M10 must integration-test both registrations and preserve isolation
-  headers in cached navigation responses.
+- Any same-origin script can read or alter WebAI data, including locally stored HF
+  tokens once that feature lands. Do not host separately controlled or untrusted code
+  on this subdomain.
+- Put the future service worker at `/sw.js` with scope `/`. M10 must preserve
+  isolation headers in every cached navigation response. Registrations and caches on
+  the former origin do not migrate or coexist with this worker.
 
-## M1 deploy verification gate
+## D-024 dedicated-origin cutover gate
+
+The canonical cutover is not complete until checks establish:
+
+1. `/`, `/about/`, and `/capabilities/` load directly with root-relative assets,
+   notices, and the capability module worker; `/webai/` does not appear in built URLs.
+2. Successful HTML, application assets/workers, notices, and a representative 404
+   carry COOP `same-origin` and COEP `require-corp`.
+3. The page and worker are cross-origin isolated; page-created shared memory completes
+   the worker atomic-sentinel round trip; OPFS opens without a write.
+4. Anonymous and dummy-Authorization HF API, resolver, and exact range requests pass
+   browser CORS from `https://webai.meenan.dev` under deployed COEP.
+5. D-023 promotion/rollback pointers remain valid, no transaction residue remains,
+   and `https://www.meenan.dev/` does not acquire WebAI's isolation headers.
+
+The legacy `/webai/` path should redirect to the new origin with the suffix stripped
+if link continuity is desired; it must not serve the root-base application as a second
+origin.
+
+## Original M1 deploy verification gate (pre-D-024)
 
 The first live deploy is not complete until automated or recorded checks establish:
 
@@ -171,11 +208,72 @@ adds `/webai/sw.js`, its acceptance work must verify that root and `/webai/`
 registrations do not interfere and that every cached/offline WebAI navigation retains
 the isolation headers.
 
+### Original M1 live verification result (pre-D-024)
+
+Passed 2026-07-17 from Google Chrome 150.0.7871.128 on Linux after rsyncing the M1
+static build to `plex:/var/www/meenan.dev/webai/`:
+
+- `/webai/`, `/webai/about/`, and `/webai/capabilities/` loaded directly with
+  `/webai/`-rooted hashed assets. The capability module worker loaded from the same
+  base path.
+- HTML, application JavaScript, the module worker, and a deliberate 404 all returned
+  `COOP: same-origin` and `COEP: require-corp`. `https://meenan.dev/` retained neither
+  header.
+- The page and dedicated worker both reported `crossOriginIsolated: true`; a
+  page-created `SharedArrayBuffer` sentinel changed from 41 to 42 through worker
+  `Atomics.compareExchange`. The worker opened the OPFS root without writing.
+- From the live isolated page, anonymous and dummy-Authorization requests each passed
+  for the HF model API (200, CORS), small resolver file (200, CORS), and 16-byte model
+  range (206, CORS, exactly 16 bytes, `Content-Range: bytes 0-15/548105171`).
+- No console, page, or failed same-origin resource errors occurred. Headless Linux
+  exposed the WebGPU page surface but returned no usable adapter, and did not expose
+  WebNN; the report classified those measured environment results as unsupported
+  without affecting other capabilities.
+
+The repeatable browser script remained in the session scratchpad, not the repository;
+the product's own capability evidence and Playwright tests exercise the same
+page/worker isolation and shared-memory contract.
+
+After adversarial review, D-023 hardened the deploy path: transfers now target a new
+release directory; a remote `flock` and durable transaction remain active through the
+public smoke decision; ordinary promotion uses an atomic symlink rename; and the
+one-time legacy directory migration uses the host's Python 3 wrapper around Linux
+`renameat2(RENAME_EXCHANGE)`. Route, asset, header, remote-command, signal, and
+controller-disconnect failures restore both the prior live target and rollback pointer.
+
+The final reviewed deploy passed on 2026-07-18. It atomically exchanged the original
+real `webai` directory for the staged-release symlink, retained that original build as
+`.webai-previous`, and left no helper, swap, or transaction residue. Built-in smoke
+checks passed the home route, capabilities route, hashed JavaScript, and isolation
+headers. Follow-up curl checks passed Home, About, Capabilities, the deployed
+third-party notice, and a deliberate 404 while `/` remained without COOP/COEP. Live
+Chrome 150 then reached a terminal 17-card/four-group capability report with page
+isolation and `SharedArrayBuffer` available, loaded the About route and shadcn notice,
+and reported no console, page, or failed-resource errors.
+
+### D-024 dedicated-origin cutover result
+
+Passed 2026-07-18 after rebuilding with Astro base `/`, promoting the release through
+D-023, and correcting nginx header inheritance in the HTML regex:
+
+- `/`, `/about/`, `/capabilities/`, root-relative hashed assets, the module worker,
+  notices, and a deliberate 404 returned from `https://webai.meenan.dev/` with COOP
+  `same-origin` and COEP `require-corp`. The built artifact contained no `/webai/`
+  URLs. `https://www.meenan.dev/` remained unisolated.
+- Live Chrome 150 reported page and worker isolation, exposed `SharedArrayBuffer`,
+  completed the worker atomic sentinel, opened OPFS without writing, and reached a
+  terminal 17-card/four-group capability report with no console, page, or failed-
+  resource errors.
+- Anonymous and dummy-Authorization browser fetches each passed for the HF API (200,
+  CORS), small resolver file (200, CORS), and model range (206, CORS, exactly 16 bytes,
+  `Content-Range: bytes 0-15/548105171`).
+- The new release and `.webai-previous` targets resolved to valid release directories;
+  no helper, swap, or durable transaction residue remained.
+
 ## Reopen triggers
 
-Move WebAI to a dedicated origin only if evidence shows one of these is material:
-independently trusted or untrusted content must share `meenan.dev`; a root service
-worker cannot coexist safely; aggregate origin quota/persistence/accounting is
-unacceptable; required popup/opener behavior conflicts with COOP; or a required
-cross-origin resource cannot satisfy `require-corp`. The owner's 2026-07-17 direction
-confirms that a dedicated domain is available if a trigger occurs.
+Reopen D-024 if the dedicated vhost cannot preserve isolation across successful,
+error, and cached responses; another independently controlled application must share
+the subdomain; a required opener flow conflicts with COOP; a required resource fails
+CORS/CORP from the new origin; or the filesystem target changes enough to invalidate
+D-023's atomic release assumptions.

@@ -1,0 +1,100 @@
+---
+import Logo from "../components/Logo.astro";
+import ThemeControl from "../components/ThemeControl";
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+const base = import.meta.env.BASE_URL;
+const currentPath = Astro.url.pathname;
+const navigation = [
+  { label: "Home", href: base },
+  { label: "Capabilities", href: `${base}capabilities/` },
+  { label: "About", href: `${base}about/` },
+] as const;
+
+const normalizePath = (path: string) => (path.endsWith("/") ? path : `${path}/`);
+---
+
+<!doctype html>
+<html lang="en" data-theme="dark" data-theme-preference="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <meta name="generator" content={Astro.generator} />
+    <link rel="icon" href={`${base}favicon.svg`} type="image/svg+xml" />
+    <script is:inline>
+      (() => {
+        const key = "webai-theme";
+        const allowed = new Set(["dark", "light", "system"]);
+        let preference = "dark";
+        try {
+          const saved = window.localStorage.getItem(key);
+          if (saved && allowed.has(saved)) preference = saved;
+        } catch {
+          // A restricted storage context still receives a stable dark-first theme.
+        }
+        const resolved =
+          preference === "system"
+            ? window.matchMedia("(prefers-color-scheme: light)").matches
+              ? "light"
+              : "dark"
+            : preference;
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.dataset.themePreference = preference;
+        document.documentElement.style.colorScheme = resolved;
+      })();
+    </script>
+    <title>{title} · WebAI</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href={base} aria-label="WebAI home">
+          <Logo />
+          <span>WebAI</span>
+        </a>
+        <nav class="primary-nav" aria-label="Primary navigation">
+          <ul class="primary-nav-list">
+            {
+              navigation.map((item) => (
+                <li>
+                  <a
+                    class="nav-link"
+                    href={item.href}
+                    aria-current={
+                      normalizePath(currentPath) === normalizePath(item.href) ? "page" : undefined
+                    }
+                  >
+                    {item.label}
+                  </a>
+                </li>
+              ))
+            }
+          </ul>
+        </nav>
+        <ThemeControl client:load />
+      </div>
+    </header>
+    <main id="main-content" class="page-shell" tabindex="-1">
+      <slot />
+    </main>
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <p>Models and results stay in your browser.</p>
+        <p>
+          Apache-2.0 · No telemetry · <a
+            class="prose-link"
+            href={`${base}licenses/THIRD-PARTY-NOTICES.txt`}>Third-party notices</a
+          >
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

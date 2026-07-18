@@ -40,7 +40,7 @@ Status legend: `confirmed · proposed · parked (D-NNN) · rejected (D-NNN)`
 | LiteRT-LM JavaScript (`.litertlm`, WebGPU) | confirmed | M7, provisional because the 0.14 web API is early preview; revalidate no-telemetry behavior and dedicated-worker viability before implementation (D-011) |
 | MediaPipe LLM Inference API | rejected (D-011) | Maintenance-only and superseded by LiteRT-LM; its documented Tasks metrics also conflict with D-005 unless proven disableable |
 | ONNX Runtime Web used directly (not through transformers.js) | parked (D-010) | Reopen if isolating ORT behavior from transformers.js becomes necessary for debugging |
-| Runtime/backend capability report (WebGPU adapter+features+limits incl. shader-f16, wasm SIMD/threads, WebNN device types, crossOriginIsolated, quota) | confirmed | M1 — the "why doesn't X work here" diagnostic; also the suitability-filter input (D-010) |
+| Runtime/backend capability report (WebGPU adapter+features+limits incl. shader-f16, wasm SIMD/threads/JSPI/Memory64, current-spec WebNN default-context acceleration, crossOriginIsolated, OPFS, quota/persistence) | confirmed | M1 — the "why doesn't X work here" diagnostic; also the suitability-filter input (D-010). D-021 supersedes the obsolete WebNN CPU/GPU/NPU `deviceType` wording. |
 
 ## Chat & testing surface
 
@@ -114,8 +114,7 @@ runtime row was resolved by D-011.
 7. **Dataset format for benchmarks.** *Answered (D-010):* bring-your-own JSON against
    a documented schema, plus one small bundled default set with a verified-permissive
    license so benchmarking demos out of the box.
-8. **Shared-origin storage.** *Answered (D-010), verified (D-012):* stay at
-   https://meenan.dev/webai/ and explicitly accept the shared-origin storage/security
-   model. Live nginx inspection, browser HF CORS measurements, and specification-based
-   origin-storage/service-worker analysis found no blocker. A dedicated domain
-   remains the owner-approved fallback if a D-012 reopen trigger appears.
+8. **Storage origin.** *Superseded by owner direction (D-024):* host at the root of
+   https://webai.meenan.dev/. D-012 verified that the original shared-origin path was
+   viable, but the dedicated origin makes project operations, isolation ownership,
+   storage boundaries, and the future root-scoped service worker simpler.

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.astro/
+.cache/
+playwright-report/
+test-results/
+coverage/
+*.log

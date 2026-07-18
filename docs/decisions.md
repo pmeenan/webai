@@ -23,6 +23,256 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-024: Canonical site moves to the root of `webai.meenan.dev`; release target stays unchanged  (2026-07-18, status: accepted)
+
+**Decision:** The canonical product URL is `https://webai.meenan.dev/`. Astro builds
+for the origin root, so application routes, content-hashed assets, license files, and
+the future service worker use `/`-rooted URLs. The static/no-server constraint and
+D-023's release machinery do not change: builds still rsync to sibling releases under
+`/var/www/meenan.dev/` and promote through the
+`/var/www/meenan.dev/webai` symlink. Deployment smoke checks use the new public
+origin.
+
+COOP `same-origin` and COEP `require-corp` remain binding on successful HTML,
+application assets/workers, and errors. D-012's isolation-policy evidence remains
+accepted, but its canonical path, shared-origin storage model, and `/webai/` service-
+worker scope are superseded. The dedicated origin is now WebAI's browser storage and
+same-origin trust boundary. Internal OPFS, IndexedDB, Cache Storage, and local-storage
+names remain `webai`-prefixed/versioned for ownership and migration hygiene, not to
+isolate WebAI from unrelated `meenan.dev` applications. M10 places its worker at
+`/sw.js` with `/` scope.
+
+**Context:** Owner direction on 2026-07-18 promoted WebAI to a dedicated subdomain to
+simplify project management and isolation ownership. Live inspection found DNS/TLS
+healthy, nginx serving the existing filesystem target as the new vhost root, static
+assets and 404s carrying COOP/COEP, and all anonymous plus dummy-Authorization HF
+API/resolver/range CORS checks succeeding from the new origin. The first inspection
+also caught two expected cutover defects before the root build was deployed: the old
+artifact still emitted `/webai/` asset URLs, and successful HTML lost COOP/COEP because
+its nginx regex defined its own `add_header`. The cutover gate therefore requires a
+root-base rebuild plus live verification after duplicating the isolation headers in
+that HTML location.
+
+The final cutover verification on 2026-07-18 passed root/nested routes, root-relative
+assets and worker, notices, success/404 isolation headers, page and worker isolation,
+shared-memory atomics, OPFS, all six anonymous/dummy-Authorization HF CORS cases, and
+parent-origin non-interference in Chrome 150. No console or failed-resource errors
+occurred, and D-023 left valid current/previous release pointers without transaction
+residue.
+
+Origin-scoped browser state does not transfer from `https://meenan.dev` to
+`https://webai.meenan.dev`. The theme preference is M1's only app-owned stored value;
+the browser's origin persistence grant/status may also reset because M1 exposes an
+explicit persistence request. Both resets are accepted before M2 stores models or
+user work. This separation does not assert independent physical disk quota or eviction
+grouping beyond what the browser actually reports. A route-preserving redirect from
+the legacy `/webai/` path is recommended for link continuity, but the root-based build
+is never served as a second live application origin.
+
+**Consequences:** D-001 is superseded only for public origin/base; its static Astro,
+client-only, and rsync decisions remain. D-010 question 8 and D-012's shared-origin
+choice are superseded. D-016 keeps its toolchain but no longer fixes Astro's base to
+`/webai/`. Capability copy now describes storage as belonging to the current origin.
+The cutover verification covers root and nested routes, root-relative assets/workers,
+notices, successful/error isolation headers, page/worker isolation and shared memory,
+HF CORS, OPFS, deploy rollback pointers, and non-interference with the parent origin.
+
+**Reopen if:** the dedicated vhost cannot preserve isolation on every application
+response; a required cross-origin resource fails CORS/CORP from the new origin; the
+project deliberately adds another application on the same subdomain; or the static
+release target moves and requires a new atomic-promotion design.
+
+## D-023: Production deploys use staged releases, an atomic symlink switch, and verified rollback  (2026-07-18, status: accepted)
+
+**Decision:** `pnpm deploy` runs the complete local quality/license gate, rebuilds the
+release artifact, rsyncs into a new sibling release directory under
+`/var/www/meenan.dev/`, verifies the staged `index.html`, and only then promotes that
+directory through the `/var/www/meenan.dev/webai` symlink. A
+release-unique remote helper holds `flock` for the entire promote, public-smoke, and
+commit exchange; controller EOF is failure, not success. Before changing the live
+path it atomically writes `.webai-transaction`, including the prior live target and
+prior rollback pointer. Ordinary symlink promotion is a same-filesystem `mv -T`.
+The one-time real-directory migration uses Linux `renameat2(RENAME_EXCHANGE)` through
+the host's Python 3 runtime, so the legacy directory and prepared symlink exchange in
+one operation. Public smoke checks fetch the home route, a nested route, and a hashed
+JavaScript asset and explicitly propagate route, COOP, and COEP failures. Curl
+connect/total time limits and SSH connect/keepalive bounds turn a stalled network path
+into controller failure.
+Only then does the controller send `commit`; smoke failure, remote command failure,
+signal, or SSH EOF restores both the live path and `.webai-previous` while the lock is
+still held. A subsequent deploy recovers durable state left by an untrappable process
+or host interruption before it starts a new transaction.
+
+**Context:** The first M1 deploy used `rsync --delete` directly against the live
+hashed-asset tree. Local rsync 3.2.7 documents its modern default as
+`--delete-during`; interruption could therefore expose HTML and `_astro` assets from
+different builds or remove an old hash before its replacement HTML was live. Staging
+makes transfer interruption invisible. Adversarial review found that the initial
+implementation returned from its promotion SSH command before smoke checks;
+post-switch pointer or connection failure could therefore escape the local rollback
+path, and the legacy directory migration had a two-rename availability gap. Keeping
+the remote transaction and lock alive until an explicit decision closes both gaps.
+
+**Consequences:** A release is immutable after staging and deployment failure is
+recoverable without retransferring the previous build. The deployment host must
+provide `flock`, Python 3, and Linux `renameat2` with `RENAME_EXCHANGE`; the deploy
+helper fails closed before promotion if the atomic exchange is unavailable. Helpers
+use release-unique hidden paths and unlink themselves after opening, so concurrent
+staging cannot replace an active helper. Release cleanup is deliberately
+not automated in M1, so it cannot accidentally remove a live or rollback target;
+bounded retention can be added after measuring release growth. The smoke gate is a
+deployment guard, not a replacement for the fuller live-browser/HF verification in
+hosting-constraints.md.
+
+**Reopen if:** the host moves releases across filesystems, loses the required
+`flock`/Python/`renameat2` surface, nginx disables serving through these symlinks,
+release accumulation becomes material, or a deployment orchestrator provides
+stronger atomic promotion and rollback.
+
+## D-022: M1 vendors the first shadcn primitive and treats generated hero art as a bounded-background exception  (2026-07-18, status: accepted)
+
+**Decision:** The M1 component foundation includes a local, token-mapped Button
+adapted from shadcn/ui and used by the capability report. Composite menu behavior
+continues to come directly from Radix. More shadcn primitives are vendored when a
+real screen needs them, rather than adding unused scaffolding.
+
+The two opaque Arachne-7 hero WebPs are a deliberate exception to D-018's default of
+rendering on the exact theme `--bg`. Perimeter sampling during adversarial review
+found dark corner values ranging roughly from `#000415` to `#080E1E` versus
+`#0E111B`, and light corners near `#F2F6FC` versus `#F6F8FE`. They therefore render
+only as bounded, rounded illustrations whose backgrounds are visibly part of the
+artwork; they must not be used as seamless page backgrounds. True-alpha or exact-token
+regeneration remains preferred for any unbounded future placement.
+
+**Context:** D-017 selected vendored shadcn plus Radix, but the first shell draft
+hand-wrote its two buttons and could not demonstrate that the selected foundation was
+present. D-018 made exact opaque backgrounds the safe default for reflective/glowing
+generated art. The built-in generation workflow preserved the character well but did
+not produce exact edge colors; the reviewed dark/light layouts remain coherent because
+the asset is intentionally framed rather than blended into the page.
+
+**Consequences:** The shadcn MIT notice is included in the generated deployed notice
+artifact and the root NOTICE. Button variants consume semantic project classes; domain
+surfaces remain bespoke. Any token change requires visual inspection of both hero
+assets at 1x and 2x, and a distracting boundary requires regeneration or a validated
+alpha workflow rather than color-keying.
+
+**Reopen if:** multiple primitives need shared variant composition utilities, the
+bounded hero treatment reads as an accidental seam, or a generation/export workflow
+can reproducibly deliver exact backgrounds or clean alpha.
+
+## D-021: Capability evidence is operational, failure-aware, and current-spec; WebNN device-type reporting is superseded  (2026-07-17, status: accepted)
+
+**Decision:** M1 implements capability availability as versioned evidence, not feature
+flags. A probe outcome is exactly one of: a measured value; conclusive absence of the
+exact API/feature; or an indeterminate failure with a sanitized stable code. Missing,
+stale, and indeterminate evidence all evaluate to `unknown`, never `unsupported`.
+Gates are pure tri-state expressions: failure dominates `all`, success dominates
+`any`, core failure is unsupported, core uncertainty is unknown, and failed or
+inconclusive optional enhancements make an otherwise viable path degraded.
+
+Cheap page-surface observations remain distinct from operational tests in disposable
+module workers. Worker messages use a validated protocol and timeouts terminate the
+worker. The page only attaches shared memory when it is cross-origin isolated, so a
+non-isolated environment can still measure unrelated worker capabilities. Shared
+memory requires an actual page-created `SharedArrayBuffer` whose sentinel a worker
+changes with `Atomics`; WebAssembly SIMD, threads, JSPI, and Memory64 use pinned
+Apache-2.0 `wasm-feature-detect@1.8.0`; WebGPU records a real adapter/device,
+an allowlisted limit set, and whether `shader-f16` was both advertised and acquired;
+OPFS opens the worker root without writing. Storage estimates and persistence state
+are volatile, origin-wide, and automatically read. Each `estimate()`, `persisted()`,
+worker OPFS-root observation, and explicit `persist()` request has a five-second
+operation timeout; timeouts become sanitized indeterminate evidence, and late page-
+promise settlements are ignored. The state-changing `persist()` call remains user-
+initiated only.
+
+The M0 phrase **“WebNN device types” is superseded**. The current WebNN specification
+no longer exposes the old `deviceType: cpu | gpu | npu` selection. M1 records page and
+worker surface availability, requests a default worker context with
+`{ powerPreference: "default", accelerated: true }`, and records the context's
+effective `accelerated` value. Unexpected platform value types become schema-valid,
+probe-local indeterminate evidence before crossing the worker protocol. It does not
+invent a CPU/GPU/NPU identity the API no longer reports. Runtime-specific WebNN
+initialization remains authoritative in M7.
+
+**Context:** This refines D-014's evidence registry while implementing its first
+consumer. Sources checked 2026-07-17: the 26 June 2026 W3C WebNN Editor's Draft
+defines `MLContextOptions` as `powerPreference` plus `accelerated`, exposes
+`MLContext.accelerated`, contains no `deviceType`, and explicitly marks context
+options under active development; the current W3C WebGPU Recommendation requires
+optional features to be advertised and requested; and the npm registry/tagged
+package exposes `wasm-feature-detect` 1.8.0 under Apache-2.0 with all four detectors.
+Local browser verification in Playwright Chromium 149, under the configured COOP/COEP
+headers, passed page/worker isolation, atomic shared-memory use, OPFS root access, and
+schema-valid wasm results. The live deployed-origin repeat in Google Chrome
+150.0.7871.128 passed the same isolation/shared-memory/OPFS contract and the six HF
+CORS cases recorded in hosting-constraints.md. Browser tests cover the complete gate
+truth table, malformed and semantically inconsistent protocol messages, platform-value
+normalization, worker setup and insecure-context run-ID fallback, non-isolated
+shared-memory omission, premature-completion failures, never-settling storage
+observations and persistence requests, sanitization, and the no-automatic-persistence
+contract.
+
+**Consequences:** Consumers disable only proven-unsupported combinations. Unknown
+remains retryable/pending because real adapter/session creation is authoritative.
+Raw evidence is safe to display because worker data is schema-bounded and platform
+exceptions lose messages/stacks. Memory64 passing is not presented as proof that a
+model over 4 GiB will load; quota is not presented as free disk or WebAI-only usage;
+and WebNN acceleration is not presented as a named device.
+
+**Reopen if:** WebNN standardizes a new attributable device-selection/result surface;
+the pinned wasm detector becomes stale or incorrect; a capability requires a
+long-lived diagnostic worker; automatic persistence requests become both
+side-effect-free and clearly preferable; or adapter initialization needs a verdict
+not expressible by the four-state vocabulary.
+
+## D-020: M1 license allowlist admits weak/file-level and attribution licenses without admitting viral copyleft  (2026-07-17, status: accepted)
+
+**Decision:** M1's SPDX allowlist adds `BlueOak-1.0.0`, `CC-BY-3.0`,
+`CC-BY-4.0`, `CC0-1.0`, `MPL-2.0`, and `Python-2.0` to the permissive licenses
+already selected by D-016/D-019. This is a deliberate package-by-package expansion,
+not a move to a denylist. The only copyleft license admitted is MPL-2.0, whose
+requirements apply at file level: M1 consumes the unmodified `lightningcss` packages
+through Tailwind/Vite's build pipeline and does not copy or modify their source files.
+Astro's optional `sharp` dependency is excluded because M1 does not use Astro image
+transforms; this keeps its LGPL-licensed native `libvips` package outside the installed
+closure. CC-BY packages are data/tooling inputs and their attribution is retained in
+the dependency metadata, WebAI NOTICE, and the deployable generated third-party
+notice file.
+
+**Context:** The first real pnpm 11.14.0 install and full dependency audit on
+2026-07-17 found the following licenses beyond D-016's seed list: MPL-2.0 on
+`lightningcss` and its platform binary; BlueOak-1.0.0 on small utility packages;
+CC-BY-4.0 on `caniuse-lite`; CC0-1.0 on `mdn-data` and SPDX identifiers;
+CC-BY-3.0 on SPDX metadata; and Python-2.0 on `argparse`. The same audit initially
+found LGPL-3.0-or-later only through Astro's optional Sharp/libvips path; reinstalling
+with `sharp` in pnpm's `ignoredOptionalDependencies` removed it while `astro build`
+remained the required verification gate. Mozilla's MPL 2.0 FAQ, checked the same day,
+describes its copyleft as file-level and explicitly permits combining unmodified MPL
+files into a larger differently licensed work. The Blue Oak 1.0.0 text grants broad
+copyright and patent permissions with a notice obligation. Creative Commons' current
+CC-BY 4.0 deed requires credit, a license link, and change indication. Package names,
+versions, and SPDX expressions came from the installed lockfile plus
+`pnpm licenses list --json`, not memory.
+
+**Consequences:** The CI gate remains strict and fails every unlisted SPDX expression.
+It is a small repository script over `pnpm licenses list --json`, which measured 491
+package-version installations grouped into 469 package records under pnpm's isolated
+layout; scaffold testing showed
+`license-checker-evergreen` saw only top-level packages and therefore could not serve
+as the full-closure gate D-016 requires.
+MPL files, if ever modified or redistributed separately, retain their MPL source and
+notices; this decision does not admit LGPL, GPL, AGPL, or share-alike content. M1 adds
+a NOTICE entry for the attributed build data, retains font licenses in full, and
+generates `public/licenses/THIRD-PARTY-NOTICES.txt` from the pinned production tree.
+The audit fails if that deployed file is stale or if a selected shipped package lacks
+an evidenced license text.
+
+**Reopen if:** a runtime dependency would ship MPL-covered source modifications; any
+LGPL/GPL/AGPL package enters the non-optional closure; a CC asset becomes visible
+product content rather than build metadata; or `sharp` becomes necessary for the
+asset pipeline.
+
 ## D-019: License policy is anti-viral, not a fixed permissive list; OFL-1.1 allowed  (2026-07-17, status: accepted)
 
 **Decision:** The dependency-license policy (D-002) is amended: the bar is **"no
@@ -54,7 +304,7 @@ with the permissive class plus OFL-1.1.
 — that sits between "permissive" and "viral" and gets its own case-by-case
 entry; or the allowlist model itself becomes friction.
 
-## D-018: Mascot identity — Arachne-7, the web-weaving spider automaton  (2026-07-17, status: accepted)
+## D-018: Mascot identity — Arachne-7, the web-weaving spider automaton  (2026-07-17, status: accepted; M1 bounded-background exception in D-022)
 
 **Decision:** WebAI's mascot is **Arachne-7**: a chrome spider automaton with twin
 neon-blue optics, articulated chrome legs with neon light strips, copper-gear
@@ -179,7 +429,7 @@ be recorded in a superseding entry); the cyan accent or neon set cannot reach AA
 in a theme without losing the identity; or the mascot/glow direction proves
 unworkable in generated assets at M1.
 
-## D-016: Toolchain — Astro 7, React 19, pnpm, TS 6, Vitest+Playwright, ESLint+Biome  (2026-07-17, status: accepted)
+## D-016: Toolchain — Astro 7, React 19, pnpm, TS 6, Vitest+Playwright, ESLint+Biome  (2026-07-17, status: accepted; `/webai/` base superseded by D-024)
 
 **Decision:** The M1 scaffold uses:
 
@@ -419,7 +669,7 @@ content hash; immutable resolver URLs stop supporting range requests; or measure
 limits make visible-page enrichment impractical. Reopen the affected mechanism, not
 the resumable/integrity requirement, unless the product scope changes explicitly.
 
-## D-012: Isolate `/webai/` in place; keep the shared origin  (2026-07-17, status: accepted)
+## D-012: Isolate `/webai/` in place; keep the shared origin  (2026-07-17, status: accepted for isolation policy; origin/base/storage scope superseded by D-024)
 
 **Decision:** Keep `https://meenan.dev/webai/` and serve WebAI with
 `Cross-Origin-Opener-Policy: same-origin` plus
@@ -484,7 +734,8 @@ accepted fallback if evidence triggers any of these conditions.
   integrity path for parameter shards; and version-pinned, license-audited model
   libraries bundled or self-hosted under `/webai/`. If those binaries cannot be
   redistributed permissively, drop the affected catalog records or reopen the adapter
-  rather than broadening D-005 or weakening D-006 silently.
+  rather than broadening D-005 or weakening D-006 silently. *(D-024 supersedes only
+  the path: these assets now ship at the dedicated origin root.)*
 - Reject MediaPipe LLM Inference as a new adapter. Google's current web guide marks
   it maintenance-only and directs new web projects to LiteRT-LM. Independently, the
   MediaPipe repository's 2026-06-05 privacy notice says MediaPipe Tasks send
@@ -517,7 +768,8 @@ More generally, runtime code, worker scripts, wasm, and compiled model-library
 binaries are application dependencies: pin, audit, content-hash, and serve them from
 `/webai/`. Only user-selected model data may use D-005's HF network path. This also
 forbids wllama's default jsDelivr fallback for Safari compatibility assets; install
-and self-host `@wllama/wllama-compat` instead.
+and self-host `@wllama/wllama-compat` instead. *(D-024 moves the same-origin asset base
+to `/` without changing this network boundary.)*
 
 The Prompt API web surface is now recorded as available in stable Chrome from 148;
 Chrome 138 was the extension surface. Chrome still describes the web API as under
@@ -548,7 +800,7 @@ telemetry concerns while adding a capability LiteRT-LM lacks; direct ORT is need
 isolate a Transformers.js defect; or a screened runtime matures and demonstrates a
 distinct measured capability.
 
-## D-010: M0 feature triage — scope verdicts  (2026-07-17, accepted)
+## D-010: M0 feature triage — scope verdicts  (2026-07-17, accepted; question 8 superseded by D-024)
 
 **Decision:** Full walk of every `proposed` features.md row and open question with
 the project owner (structured prompt session, 2026-07-17). Verdicts:
@@ -796,7 +1048,7 @@ Runtime Web) must be license-verified during the M0 survey.
 **Reopen if:** N/A for the project license; per-dependency exceptions would need their
 own decision entries (none exist yet).
 
-## D-001: Static Astro site at https://meenan.dev/webai/  (2026-07-17, accepted)
+## D-001: Static Astro site at https://meenan.dev/webai/  (2026-07-17, superseded by D-024 for origin/base; static/client-only/rsync retained)
 
 **Decision:** Build the product as an Astro static site with base path `/webai/`,
 deployed by rsync to owner-controlled hosting at https://meenan.dev/webai/. Local dev

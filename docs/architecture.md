@@ -26,20 +26,21 @@ properties:
 
 ## Fixed constraints
 
-- Astro builds a static site below `/webai/`; there is no application server (D-001).
+- Astro builds a static site at the root of `https://webai.meenan.dev/`; there is no
+  application server (D-024, superseding D-001's original base path).
 - Production serves the whole app with COOP `same-origin` and COEP `require-corp`, but
   code still probes `crossOriginIsolated` (D-012).
 - Model traffic goes only to Hugging Face or the user-selected Chrome model flow.
   Runtime code, workers, wasm, and compiled model libraries are pinned, audited,
-  content-hashed application assets served from `/webai/` (D-005).
+  content-hashed application assets served from the dedicated origin (D-005).
 - Models, remote metadata, and model output are untrusted. Parsers use bounded reads,
   schemas reject malformed records, and UI rendering treats all strings as text
   (D-006).
 - Chrome is the primary target, with feature-by-feature probes and explained fallback
   behavior in other browsers; there is no user-agent gate (D-004).
-- OPFS, IndexedDB, Cache Storage, quota, and persistence are origin-scoped. WebAI
-  namespaces its data but does not present `/webai/` as a storage or security boundary
-  (D-012).
+- OPFS, IndexedDB, Cache Storage, quota, and persistence are origin-scoped. The
+  dedicated origin is WebAI's browser storage/security boundary; internal names stay
+  versioned and `webai`-prefixed for collision and migration hygiene (D-024).
 
 ## System shape
 
@@ -226,8 +227,11 @@ The registry keeps evidence rather than a bag of booleans:
 
 1. **Stable session probes** run once per browsing context: `crossOriginIsolated`,
    `SharedArrayBuffer` transfer/use in a worker, wasm SIMD, threads, JSPI, Memory64,
-   WebGPU adapter/features/limits including `shader-f16`, WebNN device types, OPFS,
-   and relevant storage APIs. Page and worker results remain distinct.
+   WebGPU adapter/features/limits including `shader-f16`, current-spec WebNN page and
+   worker default-context/effective-acceleration evidence, OPFS, and relevant storage
+   APIs. Page and worker results remain distinct. The former “WebNN device types”
+   wording is superseded by D-021 because the current API no longer reports or
+   selects CPU/GPU/NPU by name.
 2. **Volatile environment state** includes quota estimates, persistence, WebGPU device
    loss, and browser-managed model availability/downloadability.
 3. **Adapter probes** test whether a runtime can initialize the requested backend.
@@ -235,6 +239,20 @@ The registry keeps evidence rather than a bag of booleans:
 
 Evidence includes probe version, timestamp, context, result, and sanitized failure.
 Unknown means “not yet measured” and never means incompatible.
+
+Probe results distinguish a measured value (including `false`), conclusive absence of
+the exact API/feature, and indeterminate failure. Timeouts, worker/protocol failures,
+permission/security failures, and unexpected platform exceptions are indeterminate;
+their messages and stacks are not retained. Browser values are normalized before they
+cross the worker protocol, so an unstable API's unexpected value becomes probe-local
+indeterminate evidence instead of invalidating otherwise valid results. Operational
+compute/storage tests run in short-lived workers while page probes only inspect cheap
+surfaces. Shared memory is attached only from an isolated page and must pass an atomic
+page-to-worker sentinel mutation. Every asynchronous storage call has
+its own bounded timeout so one stuck browser promise cannot block unrelated evidence,
+leave refresh running, or wedge a user action; late page-promise settlements are ignored.
+Storage estimates and current persistence state may be read automatically; requesting
+persistence is an explicit user action because it changes origin state (D-021).
 
 Stable probes refresh on navigation or an explicit diagnostic refresh. Volatile
 storage evidence invalidates after imports, downloads, deletions, persistence
@@ -258,6 +276,12 @@ failed or unknown requirements. Consumers use the same evaluator:
 
 Successful session creation remains authoritative. A probe passing does not promise
 that a particular model fits device or address-space limits.
+
+Gate expressions are tri-state. For `all`, a failure dominates uncertainty; for
+`any`, a success dominates uncertainty. A failed core requirement yields
+`unsupported`, an unknown core yields `unknown`, and a passing core with a failed or
+unknown optional enhancement yields `degraded`. Missing, stale, and indeterminate
+evidence never silently become incompatibility (D-021).
 
 ## Storage architecture
 
@@ -497,8 +521,8 @@ token-count method, concurrency, or cold/warm state differs.
   assets, Hugging Face API/resolver traffic initiated by model workflows, and the
   browser-owned Prompt API acquisition flow. Model-generated URLs are never fetched.
 - HF tokens remain local in the dedicated IndexedDB credential record, are attached
-  only to intended HF requests, are excluded/redacted from exports and logs, and share
-  the accepted `meenan.dev` origin trust boundary (D-012).
+  only to intended HF requests, are excluded/redacted from exports and logs, and stay
+  inside the dedicated `webai.meenan.dev` origin trust boundary (D-024).
 - CSP and deployed headers are defense in depth, not a substitute for text-only
   rendering, validated messages, bounded parsing, and pinned self-hosted executable
   assets.
@@ -531,8 +555,8 @@ are added to [rough-edges.md](rough-edges.md).
   manager.
 - **M8** implements the run schema and metric rules above; live M3 chat metrics already
   emit the compatible per-response observations.
-- **M10** adds the service worker at `/webai/sw.js` with `/webai/` scope and verifies
-  cached navigation retains isolation headers and coexists with any root worker.
+- **M10** adds the service worker at `/sw.js` with `/` scope and verifies every cached
+  navigation retains the isolation headers (D-024).
 
 ## Reopen triggers
 

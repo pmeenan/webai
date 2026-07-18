@@ -1,0 +1,56 @@
+{
+  "name": "webai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.14.0",
+  "engines": {
+    "node": ">=24.16.0 <25"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "typecheck": "astro check && tsc --project tsconfig.browser.json && tsc --project tsconfig.test.json && tsc --project tsconfig.node.json",
+    "lint": "eslint . --max-warnings=0",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "test": "vitest run && node --test scripts/*.test.mjs",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "license:notices": "node scripts/generate-third-party-notices.mjs",
+    "license:check": "node scripts/check-licenses.mjs",
+    "check": "corepack pnpm format:check && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && corepack pnpm test:e2e && corepack pnpm license:check",
+    "deploy": "corepack pnpm check && corepack pnpm build && ./scripts/deploy.sh"
+  },
+  "dependencies": {
+    "@astrojs/react": "6.0.1",
+    "@fontsource-variable/inter": "5.2.8",
+    "@fontsource-variable/jetbrains-mono": "5.2.8",
+    "@radix-ui/react-dropdown-menu": "2.1.20",
+    "@tailwindcss/vite": "4.3.3",
+    "astro": "7.1.1",
+    "lucide-react": "1.25.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "tailwindcss": "4.3.3",
+    "wasm-feature-detect": "1.8.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.9",
+    "@biomejs/biome": "2.5.4",
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.61.1",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitest/browser": "4.1.10",
+    "@vitest/browser-playwright": "4.1.10",
+    "eslint": "10.7.0",
+    "eslint-plugin-astro": "3.0.1",
+    "globals": "17.7.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.64.0",
+    "vitest": "4.1.10"
+  }
+}

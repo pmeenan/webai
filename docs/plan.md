@@ -45,7 +45,9 @@ owner plus targeted research/spikes where a decision needs evidence.
       D-010) — the origin choice reopens only if the spike finds a blocker.
       *(Done 2026-07-17: D-012 keeps the shared path and selects COOP `same-origin` +
       COEP `require-corp`; the live-host inspection and Chrome HF API/resolver/range
-      experiment are recorded in [hosting-constraints.md](hosting-constraints.md).)*
+      experiment are recorded in [hosting-constraints.md](hosting-constraints.md).
+      D-024 later supersedes the origin/base choice while retaining the isolation
+      policy and this historical evidence.)*
 - [x] Hugging Face API spike: search/filter capabilities of the public REST API from
       a browser client (rate limits, CORS, what "browser-suitable" filters are
       actually expressible), LFS metadata for integrity/resume.
@@ -102,31 +104,49 @@ tasks when work on it starts. The M0 feature triage (D-010) resolved the former
 *(triage)* markers; the runtime survey then closed the remaining conditions and
 selected the M7 runtime set (D-011).
 
-### M1 — Shell, toolchain, live deploy  `pending`
+### M1 — Shell, toolchain, live deploy  `done`
 
 Goal: a deployed, styled app shell with the capability layer and its first consumer.
 Depends on M0: hosting spike (D-012), toolchain decisions (D-016), UI/design
 direction ([design-brief.md](design-brief.md), D-017).
 
-- [ ] Toolchain per the M0 decisions: Astro + islands framework, package manager,
+- [x] Toolchain per the M0 decisions: Astro + islands framework, package manager,
       unit + e2e test stacks, lint/format, CI with license audit.
-- [ ] App shell: navigation, look-and-feel foundation (theming, design tokens),
+- [x] App shell: navigation, look-and-feel foundation (theming, design tokens),
       project details/about page — includes writing Design.md from
       [design-brief.md](design-brief.md) with AA-validated OKLCH token tables for
       both themes, plus the Arachne-7 asset pipeline and "W" logomark development
       from the canonical character sheet (D-018; identity already decided).
-- [ ] Capability layer (stable environment probes plus the evidence/invalidation
+- [x] Capability layer (stable environment probes plus the evidence/invalidation
       framework and storage quota as its first volatile input, per architecture.md)
       and the capability-report page as the first real feature — it exercises the
       gating everything else consumes and starts feeding rough-edges.md.
-- [ ] Deploy pipeline: build + rsync to https://meenan.dev/webai/ with the headers
-      chosen by the hosting spike; verify base path, isolation state, and HF CORS
-      from the real origin.
+- [x] Deploy pipeline: build + transactional rsync to https://webai.meenan.dev/ with
+      the headers chosen by the hosting spike; verify root-relative assets, isolation
+      state, and HF CORS from the real origin. The filesystem target remains
+      `plex:/var/www/meenan.dev/webai/` (D-023/D-024).
+
+*(Done 2026-07-18. The D-024 cutover verification at `https://webai.meenan.dev/`
+passed root and nested routes, root-relative HTML/assets/worker/notices, success/404
+isolation headers without affecting `www.meenan.dev`, page+worker isolation, atomic
+shared memory, OPFS root access, and anonymous plus dummy-Authorization HF API/
+resolver/range CORS. The local gate passes format, lint, separate strict browser and
+Node/config typechecks, thirteen Vitest browser tests, three Node tooling tests, eighteen
+Playwright e2e tests, a 491-package-version/469-record SPDX allowlist and
+deployable-notice audit, and static build.
+D-020 records the measured license closure; D-021 records capability evidence/gate
+semantics and the current WebNN API correction; D-022 records the reviewed component
+and hero-asset implementation; D-023 records atomic deploy/rollback; D-024 records
+the dedicated-origin migration.)*
 
 **Exit criteria:** a visitor to the live site sees the styled shell and an accurate
-capability report for their browser; both themes are verified against Design.md's
-definition of done (AA contrast, keyboard path, reduced motion, tokens only); CI
-runs typecheck/lint/format-check/tests/license audit.
+capability report for their browser. Both themes pass the applicable Design.md checks:
+documented AA token pairs; pre-paint and persisted explicit/System theming; keyboard
+menu/focus behavior including forced colors; named landmarks and heading structure;
+decorative imagery excluded from accessibility semantics; reduced motion; 375px
+reflow (stricter than a 200%-zoom layout width); coarse-pointer 44px targets; semantic
+status icons; and designed loading, unavailable, unknown, retry, and persistence
+states. CI runs typecheck/lint/format-check/tests/license audit.
 
 ### M2 — Manual model acquisition  `pending`
 
@@ -244,7 +264,7 @@ Runtime Web parked (D-011).
       M2 GGUF parser; the ONNX side arrives with the format's first runtime).
 - [ ] WebLLM adapter: custom MLC-compiled catalog with HF model data and
       version-pinned, license-audited, content-hashed model-library wasm served from
-      `/webai/` (never the default GitHub binary URLs); allowlisted revision-pinned
+      the WebAI origin (never the default GitHub binary URLs); allowlisted revision-pinned
       records and mandatory WebLLM `integrity` hashes for model-library/config/tokenizer
       artifacts; independently verify parameter shards against HF metadata because
       0.2.84's integrity type does not cover them, and preserve M2 resume-after-tab-close
@@ -313,8 +333,8 @@ and ship.
       never results).
 - [ ] Diagnostics pane / exportable diagnostic report.
 - [ ] PWA/offline (service-worker design per the hosting-spike isolation outcome):
-      verify root- and `/webai/`-scope registrations coexist and every cached/offline
-      navigation preserves the isolation headers.
+      install `/sw.js` at `/` scope on the dedicated origin and verify every
+      cached/offline navigation preserves the isolation headers (D-024).
 - [ ] Docs/guides, design polish, launch.
 
 **Exit criteria:** a first-time visitor on any modern browser gets an honest,
