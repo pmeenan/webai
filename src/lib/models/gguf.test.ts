@@ -7,6 +7,9 @@ class FixtureWriter {
   raw(...values: number[]): void {
     this.bytes.push(...values);
   }
+  repeat(value: number, count: number): void {
+    for (let index = 0; index < count; index += 1) this.bytes.push(value);
+  }
   u32(value: number): void {
     const bytes = new Uint8Array(4);
     new DataView(bytes.buffer).setUint32(0, value, true);
@@ -105,6 +108,21 @@ describe("defensive GGUF metadata parsing", () => {
     expect(() => parseGgufHeader(writer.result())).toThrow(/duplicate/u);
   });
 
+  it("accepts a hyphenated llama.cpp assistant architecture namespace", () => {
+    const writer = new FixtureWriter();
+    writer.raw(0x47, 0x47, 0x55, 0x46);
+    writer.u32(3);
+    writer.u64(49n);
+    writer.u64(2n);
+    writer.entry("general.architecture", 8, () => writer.string("gemma4-assistant"));
+    writer.entry("gemma4-assistant.block_count", 4, () => writer.u32(2));
+
+    expect(parseGgufHeader(writer.result())).toMatchObject({
+      architecture: "gemma4-assistant",
+      metadataCount: 2,
+    });
+  });
+
   it("bounds attacker-controlled strings before allocation", () => {
     const writer = new FixtureWriter();
     writer.raw(0x47, 0x47, 0x55, 0x46);
@@ -113,5 +131,63 @@ describe("defensive GGUF metadata parsing", () => {
     writer.u64(1n);
     writer.u64(BigInt(1024 * 1024 + 1));
     expect(() => parseGgufHeader(writer.result())).toThrow(/bounds/u);
+  });
+
+  it("accepts the measured Gemma 4 tokenizer array cardinalities", () => {
+    const writer = new FixtureWriter();
+    writer.raw(0x47, 0x47, 0x55, 0x46);
+    writer.u32(3);
+    writer.u64(541n);
+    writer.u64(4n);
+    for (const [key, count] of [
+      ["tokenizer.ggml.tokens", 262_144],
+      ["tokenizer.ggml.scores", 262_144],
+      ["tokenizer.ggml.token_type", 262_144],
+      ["tokenizer.ggml.merges", 514_906],
+    ] as const) {
+      writer.entry(key, 9, () => {
+        writer.u32(0);
+        writer.u64(BigInt(count));
+        writer.repeat(0, count);
+      });
+    }
+
+    expect(parseGgufHeader(writer.result())).toMatchObject({
+      version: 3,
+      tensorCount: 541,
+      metadataCount: 4,
+    });
+  });
+
+  it("skips non-displayed string-array values and continues inspecting metadata", () => {
+    const writer = new FixtureWriter();
+    writer.raw(0x47, 0x47, 0x55, 0x46);
+    writer.u32(3);
+    writer.u64(0n);
+    writer.u64(2n);
+    writer.entry("tokenizer.ggml.tokens", 9, () => {
+      writer.u32(8);
+      writer.u64(40n);
+      for (let index = 0; index < 40; index += 1) writer.string(`token-${index}`);
+    });
+    writer.entry("general.name", 8, () => writer.string("Metadata after tokenizer array"));
+
+    const inspection = parseGgufHeader(writer.result());
+    expect(inspection.name).toBe("Metadata after tokenizer array");
+    expect(inspection.entries[0]?.value).toContain("… 8 more");
+  });
+
+  it("still rejects a single array beyond the measured inspection ceiling", () => {
+    const writer = new FixtureWriter();
+    writer.raw(0x47, 0x47, 0x55, 0x46);
+    writer.u32(3);
+    writer.u64(0n);
+    writer.u64(1n);
+    writer.entry("tokenizer.ggml.tokens", 9, () => {
+      writer.u32(0);
+      writer.u64(1_000_001n);
+    });
+
+    expect(() => parseGgufHeader(writer.result())).toThrow(/maximum 1000000/u);
   });
 });

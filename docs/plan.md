@@ -121,10 +121,10 @@ direction ([design-brief.md](design-brief.md), D-017).
       framework and storage quota as its first volatile input, per architecture.md)
       and the capability-report page as the first real feature — it exercises the
       gating everything else consumes and starts feeding rough-edges.md.
-- [x] Deploy pipeline: build + transactional rsync to https://webai.meenan.dev/ with
+- [x] Deploy pipeline: build + direct rsync to https://webai.meenan.dev/ with
       the headers chosen by the hosting spike; verify root-relative assets, isolation
       state, and HF CORS from the real origin. The filesystem target remains
-      `plex:/var/www/meenan.dev/webai/` (D-023/D-024).
+      `plex:/var/www/meenan.dev/webai/` (D-024/D-027).
 
 *(Done 2026-07-18. The D-024 cutover verification at `https://webai.meenan.dev/`
 passed root and nested routes, root-relative HTML/assets/worker/notices, success/404
@@ -136,8 +136,9 @@ Playwright e2e tests, a 491-package-version/469-record SPDX allowlist and
 deployable-notice audit, and static build.
 D-020 records the measured license closure; D-021 records capability evidence/gate
 semantics and the current WebNN API correction; D-022 records the reviewed component
-and hero-asset implementation; D-023 records atomic deploy/rollback; D-024 records
-the dedicated-origin migration.)*
+and hero-asset implementation; D-024 records the dedicated-origin migration; D-027
+supersedes D-023's atomic releases with direct rsync for this local server. D-027's
+implementation and one-time live migration/cleanup are verified.)*
 
 **Exit criteria:** a visitor to the live site sees the styled shell and an accurate
 capability report for their browser. Both themes pass the applicable Design.md checks:
@@ -148,10 +149,11 @@ reflow (stricter than a 200%-zoom layout width); coarse-pointer 44px targets; se
 status icons; and designed loading, unavailable, unknown, retry, and persistence
 states. CI runs typecheck/lint/format-check/tests/license audit.
 
-### M2 — Manual model acquisition  `in progress`
+### M2 — Manual model acquisition  `done`
 
 Goal: model files travel reliably from Hugging Face (or local disk) into managed
-local storage — verified via metadata inspection, before any inference exists.
+local storage with byte integrity established before any inference exists. Metadata
+inspection is a repeatable, best-effort description rather than a compatibility gate.
 Depends on M0: HF API spike.
 
 - [x] Model ID / URL entry → repo file and quant listing via the HF API.
@@ -168,19 +170,27 @@ Depends on M0: HF API spike.
 - [x] User-provided model import (file picker / drag-drop, incl. already-sharded
       models).
 - [x] Defensive GGUF metadata parser (D-006, malformed-fixture tests) + inspector —
-      the verification surface for downloads until M3 exists.
+      records a controlled warning without blocking integrity-verified installation;
+      installed OPFS blobs can be re-inspected after parser updates without downloading
+      or reselecting the source.
+- [x] Known llama.cpp GGUF sidecars are excluded from primary-model choices. A
+      same-directory LFS MTP companion selected by llama.cpp's current filename/quant
+      heuristic is offered as an optional combined download and explicitly labelled as
+      a convention because the HF API does not declare file relationships.
 
-*(Implementation complete and locally verified 2026-07-18. D-025 records the
-worker/storage/parser profile and the measured 1 MiB restart plus complete public
-LFS/Xet-backed GGUF check. The milestone remains in progress until review and the
-live deploy verify the exit flow at `https://webai.meenan.dev/`.)*
+*(Done 2026-07-18. D-025 records the worker/storage/parser profile and the measured
+1 MiB restart plus complete public LFS/Xet-backed GGUF check. The project owner
+manually verified the live M2 download step at `https://webai.meenan.dev/`, closing
+the remaining live gate; the other exit criteria were already covered by the local
+browser/unit measurements above.)*
 
 **Exit criteria:** a user can enter a repo ID (e.g., an unsloth GGUF repo), pick a
 quant, download it with progress, see it in the model manager, and inspect its
 metadata. A measured interruption survives a page/worker restart and resumes without
 re-fetching the durable prefix; wrong range/size and final-integrity fixtures fail
 closed and no unverified artifact is promoted. Malformed/hostile files fail with a
-report, never a crash.
+controlled metadata warning, never a crash; a parser failure does not override proven
+remote integrity or stored-copy equality for a local import.
 
 ### M3 — First chat: wllama, with streaming split  `pending`
 
@@ -200,13 +210,26 @@ multi-GB quants that make splitting mandatory (D-009).
       current shard-size limits and split-output compatibility at build time; bundle
       and self-host every runtime/worker/wasm asset, including the compat package,
       rather than allowing its default jsDelivr fallback (D-005, RE-002).
+- [ ] Determine wllama's actual MTP/speculative-decoding capability with the paired
+      Gemma 4 target + MTP artifacts from M2 (D-026). Do not infer wrapper support
+      from bundled llama.cpp support: prove that the browser adapter can mount the
+      companion separately, select MTP rather than generic draft decoding, and run
+      it. If it can, compare MTP disabled/enabled under the same target bytes,
+      prompt, generation settings, backend, offload, and thread count; record warmups,
+      repeated TTFT/end-to-end/decode measurements, drafted/accepted tokens and
+      acceptance rate where exposed, failures, load/storage overhead, and observable
+      memory. If it cannot, record the exact missing wrapper surface and expose an
+      unavailable-with-reason capability instead of implying acceleration.
 - [ ] Streaming chat UI over the adapter.
 - [ ] Live per-response metrics from the first message: model load time,
       time-to-first-token, prefill/decode tok/s — every chat is a measurement.
 
 **Exit criteria:** on the live site, chat with a monolithic >2 GB GGUF quant
 end-to-end — auto-split on download, or split on demand for an imported file — with
-streaming output and live metrics.
+streaming output and live metrics. The pinned wllama build also has an evidence-backed
+MTP verdict: a controlled browser A/B result when usable, or the exact adapter/engine
+gap and an honest unavailable state when it is not. MTP availability is not required
+for the base chat path.
 
 ### M4 — Second runtime: Prompt API  `pending`
 
@@ -279,6 +302,14 @@ Runtime Web parked (D-011).
       preview, no-telemetry behavior, dedicated-worker viability, and the package's
       lightly documented tool/constrained-decoding surface with web model artifacts;
       drop it rather than violate D-005 or D-007 (D-011).
+- [ ] Revalidate and publish a speculative-decoding/MTP capability matrix for every
+      shipped adapter and pinned library/engine version (D-026). Distinguish a separate
+      MTP head from a generic assistant/draft model and browser-internal behavior from
+      an app-controllable feature. For each exposed path, prove companion compatibility
+      and run the controlled M3 A/B protocol on every supported browser backend; for
+      absent or incomplete paths, retain the primary-source evidence and a stable
+      unavailable reason. Recheck the current snapshot in runtime-survey.md rather
+      than treating it as permanent.
 - [ ] Structured output testing (JSON schema / GBNF / Prompt API constraints) as
       per-adapter capability work — each adapter declares and demonstrates what it
       supports.
@@ -289,7 +320,9 @@ representative model on each backend the browser supports; the same prompt runs
 side-by-side across at least two runtimes (same model where formats allow,
 equivalent models otherwise); every library-native model download demonstrates the
 M2 resume/integrity guarantees; and every impossible combination is labeled with the
-reason.
+reason. The versioned MTP matrix covers wllama, Transformers.js, WebLLM, LiteRT-LM,
+and Prompt API, and every app-controllable supported path has a reproducible browser
+A/B result.
 
 ### M8 — Benchmark harness  `pending`
 
@@ -304,6 +337,13 @@ multiple runtimes to compare.
 - [ ] Standard metric set incl. memory, per the isolation decision; labeling for
       what each backend cannot measure under D-015's evidence-labelled schema.
 - [ ] Iterations with median/p95 and variance.
+- [ ] A paired MTP acceleration profile that keeps target model, prompt/dataset,
+      generation settings, backend, thread/offload configuration, and iteration order
+      controlled while toggling only MTP/speculative decoding. Export target-only and
+      MTP raw samples plus speedup ratios, draft/acceptance metrics when available,
+      load/storage/memory overhead, and failure counts. An acceleration claim requires
+      repeated user-observed timing evidence; artifact detection or successful loading
+      alone is not a performance result (D-026).
 - [ ] Results history + JSON/CSV export.
 
 **Exit criteria:** a user runs a repeatable benchmark across ≥2 runtime/backend

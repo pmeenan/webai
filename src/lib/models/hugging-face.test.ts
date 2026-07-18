@@ -105,6 +105,22 @@ describe("Hugging Face metadata", () => {
     expect(choices[0]).toMatchObject({ quantization: "Q4_K_M", totalSize: 20 });
   });
 
+  it("keeps llama.cpp sidecars out of primary choices and pairs the closest same-directory MTP", () => {
+    const choices = groupGgufChoices([
+      lfsFile("model-Q4_K_XL.gguf", 100),
+      lfsFile("mtp-model-Q8_0.gguf", 20),
+      lfsFile("mtp-model-Q4_0.gguf", 10),
+      lfsFile("MTP/mtp-model-Q4_0.gguf", 10),
+      lfsFile("mmproj-F16.gguf", 30),
+    ]);
+
+    expect(choices).toHaveLength(1);
+    expect(choices[0]).toMatchObject({
+      label: "model-Q4_K_XL.gguf",
+      optionalMtp: { path: "mtp-model-Q4_0.gguf", size: 10 },
+    });
+  });
+
   it("fails closed on incomplete shards and non-LFS GGUF weights", () => {
     expect(() => groupGgufChoices([lfsFile("model-Q4_0-00001-of-00002.gguf")])).toThrow(
       /incomplete/u,

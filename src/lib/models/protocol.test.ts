@@ -26,4 +26,71 @@ describe("model worker event validation", () => {
       }),
     ).toBeDefined();
   });
+
+  it("accepts exactly one metadata result or warning for each installed file", () => {
+    const file = {
+      blobId: `sha256:${"a".repeat(64)}`,
+      displayName: "fixture.gguf",
+      size: 10,
+      sha256: "a".repeat(64),
+      opfsPath: `blobs/${"a".repeat(64)}`,
+      inspectionError: {
+        code: "gguf-invalid",
+        phase: "inspect",
+        message: "Inspector does not recognize this metadata yet.",
+        retryable: false,
+      },
+    };
+    const event = {
+      ...envelope,
+      type: "model/inventory",
+      inventory: {
+        models: [
+          {
+            id: "model-1",
+            displayName: "Fixture",
+            createdAt: "2026-07-18T00:00:00.000Z",
+            totalSize: 10,
+            state: "installed",
+            source: {
+              kind: "local-import",
+              filenames: ["fixture.gguf"],
+              lastModified: [1],
+              sha256: ["a".repeat(64)],
+            },
+            files: [file],
+          },
+        ],
+        jobs: [],
+        storage: { modelBytes: 10, partialBytes: 0 },
+      },
+    };
+    expect(parseModelWorkerEvent(event)).toBeDefined();
+    expect(
+      parseModelWorkerEvent({
+        ...event,
+        inventory: {
+          ...event.inventory,
+          models: [
+            {
+              ...event.inventory.models[0],
+              files: [
+                {
+                  ...file,
+                  inspection: {
+                    format: "gguf",
+                    version: 3,
+                    tensorCount: 0,
+                    metadataCount: 0,
+                    entries: [],
+                    omittedEntries: 0,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    ).toBeUndefined();
+  });
 });

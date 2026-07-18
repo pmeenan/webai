@@ -105,7 +105,10 @@ An `ArtifactSet` is not merely a format string. Its immutable identity contains 
 ordered file roles and content identities plus derivation source/transformation
 identity. Its inspected descriptor records architecture, format, quantization, shard
 relationships, tokenizer, processor, chat template, and multimodal projector
-dependencies. A runtime binding also records compiled model-library identity where
+dependencies. Optional speculative-decoding artifacts use an explicit role (for
+example `mtp-head` or `draft-model`) and compatibility edge to their target; they are
+never folded into target shards or treated as supported merely because both files are
+installed. A runtime binding also records compiled model-library identity where
 required. Changing derived inspection evidence does not rename unchanged bytes.
 
 Compatibility is derived evidence, not artifact identity. It is keyed by model-target
@@ -177,6 +180,12 @@ output uses a set rather than a strength hierarchy: `prompt-and-validate`,
 `json-schema-constrained`, `grammar-constrained`, and `tool-template`. A runtime may
 support more than one, and tool-template support is not mislabeled as constrained
 decoding.
+
+Speculative decoding is likewise a structured, session-scoped capability. Its
+evidence identifies the method (`mtp-head`, generic `draft-model`, or an adapter-
+specific method), companion identity and compatibility, whether the app can toggle
+it, exposed draft/acceptance metrics, and unavailable reason. Browser-internal
+behavior that WebAI cannot select or compare is not reported as supported.
 
 ## Worker topology and lifecycle
 
@@ -448,9 +457,19 @@ the Chrome-primary profile, not an equivalent coordination guarantee.
 Promotion uses OPFS move when available and a verified copy/size-check/delete fallback
 otherwise. Readers still see only the installed IDB state. The GGUF v2/v3 inspector
 has a 16 MiB header budget plus bounded metadata counts, strings, arrays/nesting, and
-display output. Large model bodies are not read by the inspector; only the bounded
-prefix is parsed. These are implementation limits, not claims about model compatibility;
-a controlled bound failure remains inspectable and never promotes a remote artifact.
+display output. Arrays allow one million items each and two million overall, while
+only a globally bounded preview is decoded and undisplayed tails receive bounded
+structural reads. Metadata keys are bounded, non-empty, unique, valid UTF-8, and
+control-free; their punctuation is not constrained beyond those safety properties so
+current architecture namespaces such as `gemma4-assistant` remain inspectable. Large
+model bodies are not read by the inspector; only the bounded
+prefix is parsed. These are implementation limits, not claims about model
+compatibility. Size and content identity gate promotion; inspection failure is stored
+as a warning and does not reject those verified bytes. An explicit re-inspect request
+reads the installed OPFS blob, never the network or original local `File`, then updates
+only a still-existing manifest. The runtime adapter remains the authority on actual
+load compatibility. RE-013 records the Gemma 4 tokenizer-array measurement and RE-014
+the MTP assistant-key compatibility finding.
 RE-011 fixes the storage sequencing rule: do not keep an IndexedDB transaction open
 across any OPFS or other unrelated asynchronous work.
 
@@ -523,6 +542,15 @@ Adapter-native token counts are `measured`. Counts produced afterward by a speci
 tokenizer are `estimated` and never substituted into adapter-native throughput without
 the label. If the Prompt API or another runtime hides prefill/decode boundaries, those
 rates are unavailable even though end-to-end and first-output timing remain measurable.
+
+MTP/speculative acceleration uses paired runs whose specifications differ only in the
+recorded enablement control. The run retains target-only and MTP load, TTFT,
+end-to-end, prefill/decode, failure, and memory/storage observations; drafted and
+accepted token counts plus acceptance rate are recorded only when the adapter exposes
+them. A successfully parsed companion or a successful session load is compatibility
+evidence, not an acceleration result. Speedup is reported from repeated raw samples
+under the aggregate rules below and includes overhead rather than silently excluding
+it.
 
 ### Memory and storage
 

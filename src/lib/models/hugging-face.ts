@@ -302,6 +302,7 @@ function parseFiles(value: unknown): HuggingFaceFile[] {
 }
 
 const shardPattern = /^(.*)-(\d{5})-of-(\d{5})\.gguf$/iu;
+const auxiliaryGgufMarkers = ["mmproj", "imatrix", "mtp-", "eagle3-", "dflash-"] as const;
 
 function quantizationFromName(name: string): string {
   const stem = name.slice(name.lastIndexOf("/") + 1).replace(/\.gguf$/iu, "");
@@ -310,8 +311,50 @@ function quantizationFromName(name: string): string {
   return match?.[1]?.toUpperCase() ?? "GGUF";
 }
 
+function directoryOf(path: string): string {
+  const separator = path.lastIndexOf("/");
+  return separator < 0 ? "" : path.slice(0, separator);
+}
+
+function isPrimaryGguf(path: string): boolean {
+  const filename = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  return !auxiliaryGgufMarkers.some((marker) => filename.includes(marker));
+}
+
+function quantizationBits(path: string): number {
+  const match = quantizationFromName(path).match(/\d+/u);
+  return match === null ? 0 : Number(match[0]);
+}
+
+function findOptionalMtp(
+  files: readonly HuggingFaceFile[],
+  primaryPath: string,
+): HuggingFaceFile | undefined {
+  const directory = directoryOf(primaryPath);
+  const primaryBits = quantizationBits(primaryPath);
+  return files
+    .filter(
+      (file) =>
+        file.integrity.kind === "lfs-sha256" &&
+        directoryOf(file.path) === directory &&
+        file.path.toLowerCase().endsWith(".gguf") &&
+        file.path
+          .slice(file.path.lastIndexOf("/") + 1)
+          .toLowerCase()
+          .includes("mtp-"),
+    )
+    .sort(
+      (left, right) =>
+        Math.abs(quantizationBits(left.path) - primaryBits) -
+          Math.abs(quantizationBits(right.path) - primaryBits) ||
+        left.path.localeCompare(right.path),
+    )[0];
+}
+
 export function groupGgufChoices(files: readonly HuggingFaceFile[]): HuggingFaceArtifactChoice[] {
-  const gguf = files.filter((file) => file.path.toLowerCase().endsWith(".gguf"));
+  const gguf = files.filter(
+    (file) => file.path.toLowerCase().endsWith(".gguf") && isPrimaryGguf(file.path),
+  );
   const groups = new Map<string, { expected: number; files: HuggingFaceFile[] }>();
   const singles: HuggingFaceFile[] = [];
   for (const file of gguf) {
@@ -369,9 +412,16 @@ export function groupGgufChoices(files: readonly HuggingFaceFile[]): HuggingFace
       files: group.files,
     });
   }
-  return choices.sort(
-    (left, right) => left.totalSize - right.totalSize || left.label.localeCompare(right.label),
-  );
+  return choices
+    .map((choice) => {
+      const optionalMtp = findOptionalMtp(files, choice.files[0]?.path ?? "");
+      return optionalMtp === undefined || choice.totalSize + optionalMtp.size > maxArtifactBytes
+        ? choice
+        : { ...choice, optionalMtp };
+    })
+    .sort(
+      (left, right) => left.totalSize - right.totalSize || left.label.localeCompare(right.label),
+    );
 }
 
 export function parseModelInfo(

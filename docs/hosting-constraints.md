@@ -1,15 +1,21 @@
 # Hosting constraints spike
 
 **Status:** original M0/M1 evidence checked 2026-07-17 through 2026-07-18; dedicated-
-origin migration accepted in D-024 on 2026-07-18. Historical results below remain
-dated evidence, not proof of the new origin.
+origin migration accepted in D-024 and direct deployment accepted in D-027 on
+2026-07-18. Historical results below remain dated evidence, not proof of current
+platform behavior.
 
-## Current outcome (D-024)
+## Selected outcome (D-024/D-027)
+
+D-027 is implemented and verified locally and against the live host. Its first run
+moved D-023's active release into a real `webai` directory and removed all seven
+retained release directories after the public smoke checks passed.
 
 - The canonical URL is `https://webai.meenan.dev/`; Astro, application routes,
   content-hashed assets, notices, and the future service worker are rooted at `/`.
-- The deploy filesystem does not move. D-023 still stages releases under
-  `/var/www/meenan.dev/` and promotes `/var/www/meenan.dev/webai` transactionally.
+- The deploy filesystem does not move. D-027 rsyncs directly into the real
+  `/var/www/meenan.dev/webai/` directory and deletes stale files after transferring
+  replacements. There are no retained release copies or automatic rollback.
 - COOP `same-origin` and COEP `require-corp` remain required on successful HTML,
   assets/workers, and errors. The dedicated vhost owns those headers without affecting
   `www.meenan.dev`.
@@ -52,9 +58,10 @@ assuming a generic static server:
   `/var/www/meenan.dev/webai/`. The release parent is writable by the deploy user;
   the vhost is root-owned and needs an interactive admin/sudo step to change/reload.
 - M1 initially created `/var/www/meenan.dev/webai/` as a direct rsync target. D-023
-  replaces in-place updates with sibling `.webai-release-*` directories and promotes
-  a staged build through the `webai` symlink, retaining `.webai-previous` for
-  rollback.
+  temporarily replaced it with sibling `.webai-release-*` directories and symlink
+  promotion. D-027 returns to direct rsync: its first run moves the active release
+  directory back to the real `webai` path and, after successful smoke checks, removes
+  the superseded releases and transaction pointers.
 - The dedicated vhost has server-level isolation headers, an HTML regex that defines
   its own `add_header Cache-Control`, a static-extension regex, and root-level
   `try_files $uri $uri/ =404`. nginx does not inherit parent `add_header` directives
@@ -183,8 +190,9 @@ The canonical cutover is not complete until checks establish:
    the worker atomic-sentinel round trip; OPFS opens without a write.
 4. Anonymous and dummy-Authorization HF API, resolver, and exact range requests pass
    browser CORS from `https://webai.meenan.dev` under deployed COEP.
-5. D-023 promotion/rollback pointers remain valid, no transaction residue remains,
-   and `https://www.meenan.dev/` does not acquire WebAI's isolation headers.
+5. The deployment target is the expected real directory, no obsolete release or
+   transaction residue remains, and `https://www.meenan.dev/` does not acquire
+   WebAI's isolation headers.
 
 The legacy `/webai/` path should redirect to the new origin with the suffix stripped
 if link continuity is desired; it must not serve the root-base application as a second
@@ -234,12 +242,23 @@ The repeatable browser script remained in the session scratchpad, not the reposi
 the product's own capability evidence and Playwright tests exercise the same
 page/worker isolation and shared-memory contract.
 
-After adversarial review, D-023 hardened the deploy path: transfers now target a new
-release directory; a remote `flock` and durable transaction remain active through the
-public smoke decision; ordinary promotion uses an atomic symlink rename; and the
-one-time legacy directory migration uses the host's Python 3 wrapper around Linux
+Historically, after adversarial review, D-023 hardened the deploy path: transfers
+targeted a new release directory; a remote `flock` and durable transaction remained
+active through the public smoke decision; ordinary promotion used an atomic symlink
+rename; and the one-time legacy directory migration used the host's Python 3 wrapper around Linux
 `renameat2(RENAME_EXCHANGE)`. Route, asset, header, remote-command, signal, and
-controller-disconnect failures restore both the prior live target and rollback pointer.
+controller-disconnect failures restored both the prior live target and rollback pointer.
+D-027 later superseded that mechanism for this low-volume local server because retained
+release copies and rollback machinery were not worth the operational complexity.
+
+The first D-027 deploy on 2026-07-18 successfully migrated `webai` from the active
+release symlink to a real directory, synced the new build, passed exact-200 HTML and
+hashed-JavaScript smoke checks with isolation headers, and removed all seven legacy
+release directories. The controller then appeared to hang because it had duplicated
+the coprocess input descriptor and waited for a remote lock reader that could not see
+EOF. Terminating that already-finished lock holder released the command; the controller
+now uses the original coprocess descriptors directly, and a full mocked-deploy test
+guards successful lock release.
 
 The final reviewed deploy passed on 2026-07-18. It atomically exchanged the original
 real `webai` directory for the staged-release symlink, retained that original build as
@@ -275,5 +294,6 @@ D-023, and correcting nginx header inheritance in the HTML regex:
 Reopen D-024 if the dedicated vhost cannot preserve isolation across successful,
 error, and cached responses; another independently controlled application must share
 the subdomain; a required opener flow conflicts with COOP; a required resource fails
-CORS/CORP from the new origin; or the filesystem target changes enough to invalidate
-D-023's atomic release assumptions.
+CORS/CORP from the new origin; or the filesystem target changes. Reopen D-027 if
+deploy frequency or traffic makes its observable mixed-version window unacceptable,
+or if automatic rollback becomes operationally valuable.

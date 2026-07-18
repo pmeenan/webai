@@ -117,8 +117,7 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 
 ## Current status
 
-**M0 and M1 are complete. M2 implementation is review-ready and awaiting its live
-deploy verification.** Manual HF/local acquisition, restart-safe verified downloads,
-the OPFS model manager, and bounded GGUF inspection pass locally; see
-[docs/plan.md](docs/plan.md). Keep this paragraph current when plan.md milestone
-status changes (rule 5).
+**M0, M1, and M2 are complete; M3 is next.** Manual HF/local acquisition,
+restart-safe verified downloads, the OPFS model manager, and repeatable best-effort
+GGUF inspection are live; see [docs/plan.md](docs/plan.md). Keep this paragraph current
+when plan.md milestone status changes (rule 5).

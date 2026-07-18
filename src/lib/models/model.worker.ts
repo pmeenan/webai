@@ -18,11 +18,13 @@ import {
   deleteModel,
   DurableFileWriter,
   getJob,
+  getModel,
   getStoredFile,
   installModel,
   promotePartialFile,
   putJob,
   reconcileModelInventory,
+  updateModelInspections,
   withAcquisitionLock,
 } from "./storage";
 import type {
@@ -156,7 +158,11 @@ async function hashStoredFile(
   file: File,
   declared: DownloadJobFile["source"],
   signal: AbortSignal,
-): Promise<{ sha256: string; inspection: GgufInspection }> {
+): Promise<{
+  sha256: string;
+  inspection?: GgufInspection;
+  inspectionError?: ModelFailure;
+}> {
   const integrity = createIntegrityHasher(declared.integrity, declared.size);
   const rawSha256 = createSha256();
   const reader = file.stream().getReader();
@@ -186,7 +192,27 @@ async function hashStoredFile(
     });
   }
   signal.throwIfAborted();
-  return { sha256: rawSha256.digestHex(), inspection: await inspectGgufBlob(file) };
+  return { sha256: rawSha256.digestHex(), ...(await inspectBestEffort(file)) };
+}
+
+async function inspectBestEffort(
+  file: Blob,
+): Promise<{ inspection?: GgufInspection; inspectionError?: ModelFailure }> {
+  try {
+    return { inspection: await inspectGgufBlob(file) };
+  } catch (error) {
+    return {
+      inspectionError:
+        error instanceof ModelOperationError
+          ? error.failure
+          : {
+              code: "gguf-invalid",
+              phase: "inspect",
+              message: "This WebAI version could not extract metadata from the stored file.",
+              retryable: true,
+            },
+    };
+  }
 }
 
 async function hashBlobSha256(blob: Blob, signal: AbortSignal): Promise<string> {
@@ -383,7 +409,14 @@ async function downloadFile(
   return await persistJobFile(
     job,
     fileIndex,
-    { phase: "verified", verifiedSha256: verified.sha256, inspection: verified.inspection },
+    {
+      phase: "verified",
+      verifiedSha256: verified.sha256,
+      ...(verified.inspection === undefined ? {} : { inspection: verified.inspection }),
+      ...(verified.inspectionError === undefined
+        ? {}
+        : { inspectionError: verified.inspectionError }),
+    },
     "verifying",
   );
 }
@@ -395,8 +428,7 @@ async function finishJob(
   const files: ModelFileRecord[] = [];
   for (const jobFile of job.files) {
     signal.throwIfAborted();
-    if (jobFile.verifiedSha256 === undefined || jobFile.inspection === undefined)
-      throw new Error("unverified job file");
+    if (jobFile.verifiedSha256 === undefined) throw new Error("unverified job file");
     const opfsPath = await promotePartialFile(
       jobFile.partialPath,
       jobFile.verifiedSha256,
@@ -408,7 +440,10 @@ async function finishJob(
       size: jobFile.source.size,
       sha256: jobFile.verifiedSha256,
       opfsPath,
-      inspection: jobFile.inspection,
+      ...(jobFile.inspection === undefined ? {} : { inspection: jobFile.inspection }),
+      ...(jobFile.inspectionError === undefined
+        ? {}
+        : { inspectionError: jobFile.inspectionError }),
     });
   }
   signal.throwIfAborted();
@@ -585,8 +620,6 @@ function validateImportFiles(files: readonly File[]): void {
 async function importFiles(requestId: string, selected: readonly File[]): Promise<void> {
   validateImportFiles(selected);
   const files = [...selected].sort((left, right) => left.name.localeCompare(right.name));
-  const inspections: GgufInspection[] = [];
-  for (const file of files) inspections.push(await inspectGgufBlob(file));
   const id = makeId("import");
   const now = new Date().toISOString();
   const total = files.reduce((sum, file) => sum + file.size, 0);
@@ -718,14 +751,13 @@ async function importFiles(requestId: string, selected: readonly File[]): Promis
                 message: `Stored bytes for ${file.name} do not match the selected file.`,
                 retryable: false,
               });
-            const inspection = inspections[index];
-            if (inspection === undefined) throw new Error("missing GGUF inspection");
+            const inspection = await inspectBestEffort(stored);
             const verifiedFile: LocalImportJobFile = {
               ...jobFile,
               durableBytes: offset,
               phase: "verified",
               verifiedSha256: sha256,
-              inspection,
+              ...inspection,
             };
             job = {
               ...job,
@@ -790,8 +822,7 @@ async function attemptFinishImport(requestId: string, job: LocalImportJobRecord)
 async function finishImportJob(requestId: string, job: LocalImportJobRecord): Promise<void> {
   const records: ModelFileRecord[] = [];
   for (const jobFile of job.files) {
-    if (jobFile.verifiedSha256 === undefined || jobFile.inspection === undefined)
-      throw new Error("unverified import file");
+    if (jobFile.verifiedSha256 === undefined) throw new Error("unverified import file");
     const opfsPath = await promotePartialFile(
       jobFile.partialPath,
       jobFile.verifiedSha256,
@@ -803,7 +834,10 @@ async function finishImportJob(requestId: string, job: LocalImportJobRecord): Pr
       size: jobFile.source.size,
       sha256: jobFile.verifiedSha256,
       opfsPath,
-      inspection: jobFile.inspection,
+      ...(jobFile.inspection === undefined ? {} : { inspection: jobFile.inspection }),
+      ...(jobFile.inspectionError === undefined
+        ? {}
+        : { inspectionError: jobFile.inspectionError }),
     });
   }
   const model: InstalledModelRecord = {
@@ -832,6 +866,48 @@ async function finishImportJob(requestId: string, job: LocalImportJobRecord): Pr
   });
   await installModel(model);
   post({ type: "model/complete", requestId, modelId: model.id });
+}
+
+async function reinspectModel(requestId: string, modelId: string): Promise<void> {
+  const model = await getModel(modelId);
+  if (model === undefined) {
+    throw new ModelOperationError({
+      code: "input-invalid",
+      phase: "inspect",
+      message: "The installed model no longer exists.",
+      retryable: false,
+    });
+  }
+  const files: ModelFileRecord[] = [];
+  for (const file of model.files) {
+    const stored = await getStoredFile(file.opfsPath);
+    if (stored === undefined || stored.size !== file.size) {
+      throw new ModelOperationError({
+        code: "storage",
+        phase: "inspect",
+        message: `The stored bytes for ${file.displayName} are missing or incomplete.`,
+        retryable: true,
+      });
+    }
+    const identity = {
+      blobId: file.blobId,
+      displayName: file.displayName,
+      size: file.size,
+      sha256: file.sha256,
+      opfsPath: file.opfsPath,
+    };
+    files.push({ ...identity, ...(await inspectBestEffort(stored)) });
+  }
+  const updated = await updateModelInspections(modelId, files);
+  if (updated === undefined) {
+    throw new ModelOperationError({
+      code: "input-invalid",
+      phase: "inspect",
+      message: "The installed model was deleted while its metadata was being inspected.",
+      retryable: false,
+    });
+  }
+  post({ type: "model/complete", requestId, modelId });
 }
 
 scope.addEventListener("message", (message: MessageEvent<unknown>) => {
@@ -943,6 +1019,11 @@ scope.addEventListener("message", (message: MessageEvent<unknown>) => {
           if (typeof request.modelId !== "string") throw new Error("invalid request");
           await deleteModel(request.modelId);
           post({ type: "model/complete", requestId });
+          break;
+        }
+        case "model/inspect": {
+          if (typeof request.modelId !== "string") throw new Error("invalid request");
+          await reinspectModel(requestId, request.modelId);
           break;
         }
         default:

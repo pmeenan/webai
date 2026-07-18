@@ -22,106 +22,87 @@ if [[ ! -f "${deploy_source}index.html" ]]; then
   exit 1
 fi
 
-release_dir="$(
-  ssh "${deploy_ssh_options[@]}" "${deploy_host}" \
-    "mktemp -d '${deploy_parent}/.webai-release-XXXXXXXX'"
-)"
-readonly release_dir
-
-if [[ ! "${release_dir}" =~ ^${deploy_parent}/\.webai-release-[A-Za-z0-9]+$ ]]; then
-  echo "Refusing to deploy: remote staging path was unexpected: ${release_dir}" >&2
-  exit 1
-fi
-readonly release_token="${release_dir##*.webai-release-}"
-readonly remote_helper="${deploy_parent}/.webai-helper-${release_token}"
-
-echo "Staging release in ${release_dir}"
-rsync --archive --delete --chmod=D755,F644 \
-  --rsh="${deploy_rsh}" \
-  "${deploy_source}" "${deploy_host}:${release_dir}/"
-rsync --archive --chmod=F700 \
-  --rsh="${deploy_rsh}" \
-  scripts/deploy-remote.sh \
-  "${deploy_host}:${remote_helper}"
-
-remove_remote_helper() {
-  ssh "${deploy_ssh_options[@]}" "${deploy_host}" rm -f -- "${remote_helper}" || true
-}
-early_cleanup() {
-  local status="$?"
-  trap - EXIT INT TERM
-  remove_remote_helper
-  exit "${status}"
-}
-trap early_cleanup EXIT INT TERM
-
 smoke_dir="$(mktemp -d)"
 readonly smoke_dir
-transaction_active=false
+lock_active=false
 
-coproc deployment_transaction {
-  ssh "${deploy_ssh_options[@]}" "${deploy_host}" \
-    "${remote_helper}" "${deploy_parent}" "${deploy_live}" "${release_dir}"
-}
-readonly transaction_pid="${deployment_transaction_PID}"
-exec {transaction_output}<&"${deployment_transaction[0]}"
-exec {transaction_input}>&"${deployment_transaction[1]}"
-transaction_active=true
-
-finish_transaction() {
-  local decision="$1"
-  if [[ "${transaction_active}" != true ]]; then
+release_deploy_lock() {
+  if [[ "${lock_active}" != true ]]; then
     return 0
   fi
-  printf '%s\n' "${decision}" >&"${transaction_input}" || true
-  exec {transaction_input}>&-
-  if wait "${transaction_pid}"; then
-    transaction_active=false
+  exec {lock_input}>&-
+  if wait "${lock_pid}"; then
+    lock_active=false
     return 0
   fi
-  transaction_active=false
+  lock_active=false
   return 1
 }
 
 cleanup() {
   local status="$?"
   trap - EXIT INT TERM
-  if [[ "${transaction_active}" == true ]]; then
-    finish_transaction rollback || true
-  fi
-  remove_remote_helper
+  release_deploy_lock || true
   rm -rf -- "${smoke_dir}"
   exit "${status}"
 }
 trap cleanup EXIT INT TERM
 
-if ! IFS=$'\t' read -r transaction_status previous_release <&"${transaction_output}" ||
-  [[ "${transaction_status}" != "READY" ]]; then
-  exec {transaction_input}>&-
-  wait "${transaction_pid}" || true
-  transaction_active=false
-  echo "Remote deployment transaction failed before smoke checks." >&2
-  exit 1
+# Serialize the complete direct deployment against both another direct deploy and any
+# still-running D-023 transaction. The remote flock is released automatically if the
+# SSH controller disappears.
+coproc deployment_lock {
+  ssh "${deploy_ssh_options[@]}" "${deploy_host}" \
+    "exec flock --exclusive --nonblock '${deploy_parent}/.webai-deploy.lock' sh -c 'printf \"READY\\n\"; cat >/dev/null'"
+}
+readonly lock_pid="${deployment_lock_PID}"
+lock_output="${deployment_lock[0]}"
+lock_input="${deployment_lock[1]}"
+if ! IFS= read -r lock_status <&"${lock_output}" || [[ "${lock_status}" != "READY" ]]; then
+  exec {lock_input}>&-
+  exec {lock_output}<&-
+  wait "${lock_pid}" || true
+  echo "Another WebAI deployment holds the remote deploy lock." >&2
+  exit 75
 fi
-readonly previous_release
+exec {lock_output}<&-
+lock_active=true
 
-if ! check_route "" "home" || ! check_route "capabilities/" "capabilities"; then
-  echo "Smoke check failed; requesting rollback to ${previous_release:-no prior release}." >&2
-  finish_transaction rollback || true
+# The first direct deploy converts D-023's live release symlink back into the real
+# webai directory without copying the active build. Later deploys only validate it.
+ssh "${deploy_ssh_options[@]}" "${deploy_host}" bash -s -- \
+  prepare "${deploy_parent}" "${deploy_live}" <"${deploy_script_dir}/deploy-target.sh"
+
+echo "Syncing ${deploy_source} directly to ${deploy_host}:${deploy_live}/"
+# Updated files are renamed into place near the end of the transfer and old hashed
+# assets are deleted only after new files arrive. This reduces, but does not claim to
+# eliminate, the mixed-version window inherent in a direct in-place deployment.
+rsync --archive --delay-updates --delete-after --chmod=D755,F644 \
+  --rsh="${deploy_rsh}" \
+  "${deploy_source}" "${deploy_host}:${deploy_live}/"
+
+if ! check_route "" "home" html ||
+  ! check_route "capabilities/" "capabilities" html; then
+  echo "Smoke check failed after direct deployment; no automatic rollback is available." >&2
   exit 1
 fi
 
 asset_path="$(rg --only-matching '/_astro/[^" ]+\.js' \
-  "${smoke_dir}/home.body" | sed -n '1p')"
-if [[ -z "${asset_path}" ]] || ! check_route "${asset_path#/}" "asset"; then
-  echo "Asset smoke check failed; requesting rollback to ${previous_release:-no prior release}." >&2
-  finish_transaction rollback || true
+  "${deploy_source}index.html" | sed -n '1p')"
+if [[ -z "${asset_path}" ]] ||
+  ! check_route "${asset_path#/}" "asset" javascript; then
+  echo "Asset smoke check failed after direct deployment; no automatic rollback is available." >&2
   exit 1
 fi
 
-if ! finish_transaction commit; then
-  echo "Remote commit failed; the remote transaction attempted rollback." >&2
+# Only a verified direct deploy removes D-023's obsolete release directories and
+# transaction pointers. This is idempotent on subsequent deployments.
+ssh "${deploy_ssh_options[@]}" "${deploy_host}" bash -s -- \
+  cleanup "${deploy_parent}" "${deploy_live}" <"${deploy_script_dir}/deploy-target.sh"
+
+if ! release_deploy_lock; then
+  echo "Deployment finished, but releasing the remote deploy lock reported an error." >&2
   exit 1
 fi
 
-echo "Deployed ${release_dir} and verified routes, assets, and isolation headers."
+echo "Deployed directly to ${deploy_host}:${deploy_live}/ and verified routes, assets, and isolation headers."

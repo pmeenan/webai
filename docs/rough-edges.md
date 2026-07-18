@@ -25,6 +25,57 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-014: Gemma 4 MTP exposes a hyphenated architecture namespace  (2026-07-18, status: worked-around)
+
+**Environment:** `mtp-gemma-4-E2B-it.gguf` from
+`unsloth/gemma-4-E2B-it-qat-GGUF` revision
+`66a399f68ddd113b06dff02fca9523e55465d11d`; llama.cpp commit
+`571d0d540df04f25298d0e159e520d9fc62ed121`; WebAI TypeScript inspector on Linux,
+2026-07-18. **Repro or measurement:** Read the MTP file's first 16 MiB. Its GGUF v3
+header declares 49 tensors and 43 metadata pairs. The first architecture-specific key
+at byte 316 is `gemma4-assistant.block_count`; subsequent keys use the same
+hyphenated namespace. All 43 keys are unique and metadata ends at byte 15,783,265.
+Compare with llama.cpp's constants, which define the architecture string as
+`gemma4-assistant`, and its GGUF reader, which rejects empty and duplicate keys but
+does not impose WebAI's former `[a-z0-9_.]` character allowlist. **Observed:** WebAI
+reported “invalid or duplicate key” even though the upstream runtime accepts and
+defines the namespace. **Expected:** Defensive inspection should enforce byte, UTF-8,
+control-character, and uniqueness bounds without inventing a format restriction that
+rejects an upstream architecture. **Impact on WebAI:** Metadata keys are now limited
+to 1,024 bytes, non-empty, unique, valid UTF-8, and control-free, while punctuation is
+otherwise accepted and safely rendered as text. The MTP uses the ordinary bounded
+GGUF parser but is separately labelled as a speculative-decoding companion in the
+manager. A regression fixture covers the hyphenated namespace, and the pinned real
+header parses as `gemma4-assistant`. **Links:** [pinned MTP file](https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/blob/66a399f68ddd113b06dff02fca9523e55465d11d/mtp-gemma-4-E2B-it.gguf),
+[llama.cpp architecture constants](https://github.com/ggml-org/llama.cpp/blob/571d0d540df04f25298d0e159e520d9fc62ed121/gguf-py/gguf/constants.py#L1036-L1042),
+[llama.cpp GGUF reader](https://github.com/ggml-org/llama.cpp/blob/571d0d540df04f25298d0e159e520d9fc62ed121/ggml/src/gguf.cpp#L544-L570),
+[D-025](decisions.md).
+
+## RE-013: Current Gemma 4 GGUF tokenizer metadata exceeds small array-count assumptions  (2026-07-18, status: worked-around)
+
+**Environment:** Revision `66a399f68ddd113b06dff02fca9523e55465d11d` of
+`unsloth/gemma-4-E2B-it-qat-GGUF`, measured through its immutable Hugging Face
+resolver and WebAI's TypeScript inspector on Linux, 2026-07-18. **Repro or
+measurement:** Fetch bytes 0–16,777,215 of the 2,620,370,976-byte
+`gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf` and walk its GGUF v3 metadata. Its tokenizer
+arrays contain 262,144 tokens, 262,144 scores, 262,144 token types, and 514,906
+merges—1,301,338 items total. Metadata ends at byte 15,783,435. The API-advertised
+LFS SHA-256 is
+`e531007218dfab990486a5de7676a6932d6ea8dea233d1f698d7c21cf8a16889`.
+**Observed:** M2's initial 100,000-per-array/250,000-total limits rejected the
+integrity-verified artifact before installation. **Expected:** Contemporary tokenizer
+metadata that fits the byte ceiling should remain inspectable without materializing
+every value, and inspector lag should not override content integrity. **Impact on
+WebAI:** D-025 permits one million items per array and two million overall, previews
+only bounded values, and structurally advances undisplayed tails. The real prefix
+parsed in 68 ms in the local Vitest/Vite environment; this is a development-machine
+measurement, not a cross-browser performance claim. Inspection is now best-effort,
+records a warning on failure, and can be re-run from installed OPFS bytes after code
+updates. Synthetic tests retain controlled rejection above the new ceiling. **Links:**
+[pinned model revision](https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/tree/66a399f68ddd113b06dff02fca9523e55465d11d),
+[GGUF specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md),
+[D-025](decisions.md).
+
 ## RE-012: Writable-stream durability fallback repeats existing-data copy semantics  (2026-07-18, status: open)
 
 **Environment:** File System Living Standard last updated 2026-03-15, inspected

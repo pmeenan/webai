@@ -162,6 +162,10 @@ export class ModelWorkerClient {
     await this.#send({ type: "model/delete", modelId });
   }
 
+  async inspect(modelId: string): Promise<void> {
+    await this.#send({ type: "model/inspect", modelId });
+  }
+
   dispose(): void {
     this.#worker.terminate();
     this.#terminate(

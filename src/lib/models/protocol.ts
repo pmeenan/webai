@@ -56,6 +56,12 @@ export type ModelWorkerRequest =
       readonly type: "model/delete";
       readonly requestId: string;
       readonly modelId: string;
+    }
+  | {
+      readonly protocolVersion: typeof modelWorkerProtocolVersion;
+      readonly type: "model/inspect";
+      readonly requestId: string;
+      readonly modelId: string;
     };
 
 export type ModelWorkerEvent =
@@ -193,6 +199,7 @@ function isJob(value: unknown): boolean {
         !nonnegativeInteger(file.durableBytes) ||
         !nonnegativeInteger(file.source.size) ||
         (file.inspection !== undefined && !isInspection(file.inspection)) ||
+        (file.inspectionError !== undefined && !isFailure(file.inspectionError)) ||
         (file.verifiedSha256 !== undefined &&
           (typeof file.verifiedSha256 !== "string" || !/^[a-f0-9]{64}$/u.test(file.verifiedSha256)))
       )
@@ -247,7 +254,9 @@ function isInstalledModel(value: unknown): boolean {
         typeof file.sha256 === "string" &&
         /^[a-f0-9]{64}$/u.test(file.sha256) &&
         boundedText(file.opfsPath, 1_024) &&
-        isInspection(file.inspection),
+        (file.inspection === undefined || isInspection(file.inspection)) &&
+        (file.inspectionError === undefined || isFailure(file.inspectionError)) &&
+        (file.inspection !== undefined) !== (file.inspectionError !== undefined),
     )
   );
 }
@@ -269,22 +278,26 @@ function isRepository(value: unknown): boolean {
         boundedText(choice.label, 2_048) &&
         boundedText(choice.quantization, 128) &&
         nonnegativeInteger(choice.totalSize) &&
+        (choice.optionalMtp === undefined || isRepositoryFile(choice.optionalMtp)) &&
         Array.isArray(choice.files) &&
         choice.files.length <= 256 &&
-        choice.files.every(
-          (file) =>
-            isRecord(file) &&
-            boundedText(file.path, 1_024) &&
-            nonnegativeInteger(file.size) &&
-            isRecord(file.integrity) &&
-            ((file.integrity.kind === "lfs-sha256" &&
-              typeof file.integrity.digest === "string" &&
-              /^[a-f0-9]{64}$/u.test(file.integrity.digest)) ||
-              (file.integrity.kind === "git-blob-sha1" &&
-                typeof file.integrity.digest === "string" &&
-                /^[a-f0-9]{40}$/u.test(file.integrity.digest))),
-        ),
+        choice.files.every(isRepositoryFile),
     )
+  );
+}
+
+function isRepositoryFile(file: unknown): boolean {
+  return (
+    isRecord(file) &&
+    boundedText(file.path, 1_024) &&
+    nonnegativeInteger(file.size) &&
+    isRecord(file.integrity) &&
+    ((file.integrity.kind === "lfs-sha256" &&
+      typeof file.integrity.digest === "string" &&
+      /^[a-f0-9]{64}$/u.test(file.integrity.digest)) ||
+      (file.integrity.kind === "git-blob-sha1" &&
+        typeof file.integrity.digest === "string" &&
+        /^[a-f0-9]{40}$/u.test(file.integrity.digest)))
   );
 }
 

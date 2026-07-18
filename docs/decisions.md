@@ -23,6 +23,103 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-027: Production deploys rsync directly into the live directory  (2026-07-18, status: accepted)
+
+**Decision:** `pnpm deploy` keeps the complete local quality/license gate and rebuild,
+then rsyncs `dist/` directly to `plex:/var/www/meenan.dev/webai/` with delayed updates
+and deletion after transfer. Public smoke checks still verify the home and capabilities
+routes, a hashed JavaScript asset, and COOP/COEP headers. Smoke failure is reported but
+does not roll back an in-place deployment.
+
+One lightweight remote `flock` serializes preparation, rsync, smoke checks, and cleanup
+against concurrent direct deploys and any still-running D-023 transaction. The first
+direct deploy recognizes D-023's current `webai` symlink only when it resolves to a
+same-parent `.webai-release-*` directory. It records a recoverable migration marker,
+removes that symlink, and moves the active directory into the real `webai` path without
+copying it. The marker and parent directory are synced before the unlink. Handled
+failure restores the symlink; a later deploy completes an abrupt interruption found
+on disk. After rsync and smoke checks succeed, it removes the
+obsolete sibling release directories plus D-023's rollback, transaction, helper, and
+swap pointers. Later deploys validate the real directory and perform the same direct
+sync and idempotent cleanup without creating release copies.
+
+**Context:** The deployment target is a local, low-volume static server. Inspection on
+2026-07-18 found seven retained `.webai-release-*` directories plus live and previous
+release symlinks. That storage and operational complexity are not valuable enough here
+to justify D-023's atomic promotion, durable rollback transaction, remote helper,
+Python, and `renameat2` machinery. A simple advisory lock remains worthwhile to avoid
+overlapping writes. The owner explicitly prefers direct rsync.
+
+The first live D-027 run on 2026-07-18 moved the active release into the real `webai`
+directory, synced the build, passed the public smoke checks, and removed all seven
+legacy release directories. The controller then waited indefinitely while releasing
+its advisory lock because it had retained a duplicate write descriptor to the remote
+lock reader. The site update and cleanup were already complete. The controller now
+uses the original coprocess descriptors without duplication, and a mocked end-to-end
+controller test proves that the lock reader receives EOF and the deploy terminates.
+
+**Consequences:** There is one live site copy and stale hashed assets are removed on
+each successful transfer. `--delay-updates` and `--delete-after` reduce the interval in
+which HTML and hashed assets can disagree, but direct deployment is not globally
+atomic. Transfer interruption or a failed smoke check can leave a partially updated
+site, and recovery is another deploy rather than automatic rollback. The deploy host
+no longer requires the D-023 transaction helper, Python, `renameat2`, or retained
+release space; it still requires `flock` for serialization. D-023 is superseded; its
+historical verification remains evidence for the earlier implementation only.
+
+**Reopen if:** measured traffic or deployment frequency makes the mixed-version window
+material, a failed direct transfer causes unacceptable recovery time, the target stops
+being a local single-site directory, or retained rollback becomes worth its storage
+and complexity.
+
+## D-026: MTP is a measured adapter capability, not an artifact or upstream-engine claim  (2026-07-18, status: accepted)
+
+**Decision:** WebAI treats multi-token prediction (MTP) and other speculative-decoding
+methods as capabilities of a specific adapter + engine version + target/companion +
+backend + session combination. Installing or parsing an MTP companion proves only
+artifact availability. Support in an underlying native engine does not prove that its
+JavaScript wrapper can mount the companion separately, select the correct speculative
+method, or expose useful measurements. Browser-internal speculation that an API does
+not let WebAI control is not an app-supported capability.
+
+M3 must determine the pinned wllama path with the paired Gemma 4 artifacts already
+covered by M2. A usable path receives a controlled target-only versus MTP browser A/B;
+an unusable path receives an evidence-backed unavailable reason and does not block the
+base chat exit. M7 revalidates a versioned matrix for wllama, Transformers.js, WebLLM,
+LiteRT-LM, Prompt API, and any newly shipped adapter. Each app-controllable supported
+path is tested per browser backend. M8 turns the same protocol into an exportable
+benchmark profile.
+
+The A/B pins target bytes, prompt/dataset, generation settings, requested/effective
+backend, offload, threads, warmups, and iteration policy while toggling only the
+speculative method. It retains raw and aggregate TTFT, end-to-end, prefill/decode,
+failures, load/storage overhead, and observable memory; drafted/accepted tokens and
+acceptance rate are included where the adapter exposes them. Acceleration is claimed
+only from repeated timing evidence, not successful loading, and results may honestly
+show no gain or a regression.
+
+**Context:** A source/package audit on 2026-07-18 found that wllama 3.5.1 bundles
+llama.cpp commit `dd4623a74f0c85e6b1dd9ee99a92b9c67cac3708`, which implements
+Gemma 4 MTP, and forwards `spec_draft_*` parameters. The wrapper does not expose the
+engine's speculative type selector, however, and its blob preparation has no distinct
+draft/MTP artifact role. Transformers.js 4.2.0 tagged source and WebLLM 0.2.84's exact
+npm contents exposed no speculative/draft/MTP surface. LiteRT-LM 0.14.0's native
+runtime and CLI expose MTP enablement and contain acceptance statistics, while its JavaScript
+Emscripten `AdvancedSettings` binding omits the native enable field. Prompt API leaves
+model selection and execution to the browser. Exact primary-source links and the
+milestone recheck ledger are in [runtime-survey.md](runtime-survey.md).
+
+**Consequences:** MTP companion pairing in M2 remains useful even before a runtime can
+consume it, but the model manager and runtime UI keep “installed,” “compatible,”
+“enabled,” and “accelerated” as separate states. Capability reports name the precise
+missing layer instead of flattening all speculative methods into one boolean. Formal
+performance work waits for a browser-controllable path; native CLI results may inform
+feasibility but cannot substitute for WebAI measurements.
+
+**Reopen if:** a stable cross-runtime web API standardizes speculative decoding and
+its metrics, or evidence shows that the controlled paired-run protocol cannot isolate
+the feature's user-observed effect.
+
 ## D-025: M2 uses restart-safe OPFS checkpoints, transactional manifests, and bounded GGUF inspection  (2026-07-18, status: accepted)
 
 **Decision:** M2 implements D-013/D-014 with a version-1 model control plane. The
@@ -60,7 +157,21 @@ Streaming SHA-256 and the legacy Git-blob SHA-1 identity use `@noble/hashes` 2.2
 (MIT, zero runtime dependencies); SHA-1 exists only to reproduce HF Git object IDs,
 not as a new security primitive. The M2 GGUF inspector accepts current GGUF v2/v3,
 reads at most 16 MiB of header data, bounds strings, arrays, nesting, metadata count,
-UTF-8, and displayed entries, and reports controlled failures. Imports accept one
+UTF-8 for displayed values, and displayed entries, and reports controlled failures.
+Metadata keys are capped at 1,024 bytes, valid UTF-8 without control characters,
+non-empty, and unique. The inspector does not invent a narrower character grammar:
+current llama.cpp uses hyphenated architecture namespaces such as
+`gemma4-assistant.block_count` and its reader accepts non-empty unique keys.
+One array may contain at most one million items and all arrays at most two million
+items. Only 32 values per array, under a 1,024-item global display budget, are decoded
+for display; undisplayed tails are advanced with bounded structural reads rather than
+materialized. Inspection is best-effort metadata, not an integrity or runtime-
+compatibility gate: a remote artifact with proven pinned size and LFS SHA-256, or a
+local import whose stored bytes match its selected source, installs with either an
+inspection result or a controlled warning. The worker can re-run inspection directly
+over installed OPFS blobs and update an existing manifest without a network request or
+source-file reselection; its final transaction cannot recreate a concurrently deleted
+model. Imports accept one
 GGUF or one complete conventionally named shard set, hash the selected source while
 writing, then re-hash the stored OPFS bytes before promotion. A failed finalization
 returns to `ready-to-install`; an active import can be stopped and becomes
@@ -69,13 +180,19 @@ streaming splitting and can replace the ordinary-file sink behind the existing
 durable-source-offset contract.
 
 M2 deliberately lists and selects only LFS SHA-256-identified GGUF weight sets. It
-skips non-GGUF siblings before interpreting their optional size/hash fields, treats a
-valid `00001-of-00001` name as a single artifact, and does not infer runtime companion
-files from names. It therefore does not yet download Git-managed companions. The
-Git-blob hasher and framing tests establish the identity
-primitive for the first runtime adapter that defines an explicit companion manifest
-in M3/M7. HF 429 responses use three bounded exponential full-jitter retries; retry
-state is visible, and an active transfer can be paused to cancel its wait.
+skips non-GGUF siblings before interpreting their optional size/hash fields and treats
+a valid `00001-of-00001` name as a single artifact. Filenames carrying llama.cpp's
+known `mtp-`, `mmproj`, `imatrix`, `eagle3-`, or `dflash-` markers are not presented as
+standalone primary models. For MTP only, M2 mirrors current llama.cpp behavior by
+offering the same-directory LFS sidecar whose filename quantization has the closest
+bit width; the UI identifies this as a llama.cpp filename convention and retains a
+model-only action plus a link to the pinned repository. The HF model-info API exposes
+file paths, sizes, and hashes but no companion relationship, and WebAI does not parse
+untrusted model-card prose to invent one. Other companion types and Git-managed
+companions remain deferred until an adapter supplies an explicit contract. The
+Git-blob hasher and framing tests retain the identity primitive for that later work.
+HF 429 responses use three bounded exponential full-jitter retries; retry state is
+visible, and an active transfer can be paused to cancel its wait.
 
 **Context:** The implementation was measured 2026-07-18 in Playwright Chromium. Its
 OPFS file handle exposed `move()`; a page/worker reload after exactly 1 MiB durable
@@ -98,7 +215,16 @@ and inspected `llama` metadata. Current upstream GGUF specification and noble-ha
 check of `bartowski/Llama-3.2-1B-Instruct-GGUF` at commit
 `067b946cf014b7c697f3654f621d577a3e3afd1c` returned 21 siblings spanning GGUF,
 Markdown, `.gitattributes`, and imatrix files, grounding the weights-only parse path
-against a realistic mixed repository. RE-011 records the
+against a realistic mixed repository. A follow-up check of
+`unsloth/gemma-4-E2B-it-qat-GGUF` at commit
+`66a399f68ddd113b06dff02fca9523e55465d11d` found no API-level companion mapping but
+did find the root LFS `mtp-gemma-4-E2B-it.gguf` described by the repository card and
+selected by llama.cpp commit `571d0d540df04f25298d0e159e520d9fc62ed121`'s
+same-directory/closest-bit-width heuristic in `common/download.cpp`. Its Q4_K_XL target's four
+tokenizer arrays contain 1,301,338 items and end within the 16 MiB header budget;
+RE-013 records the exact counts and parser adjustment. The real bounded prefix parsed
+in 68 ms in the local Vitest/Vite environment. RE-014 records the MTP assistant's
+hyphenated architecture namespace and the upstream-reader comparison. RE-011 records the
 IndexedDB transaction-lifetime trap found by the restart/import tests.
 
 **Consequences:** Signed resolver URLs never enter persisted state; mutable refs are
@@ -118,6 +244,9 @@ Installed-model deletion is disabled while that acquisition lock is known busy i
 current inventory. Refresh exposes its waiting state and remains available to detect
 an abandoned cross-tab job; local imports expose Stop and abort while queued or
 copying instead of presenting an uninterruptible zero-percent operation.
+Inspection warnings remain attached to the installed file and do not mislabel parser
+coverage as runtime compatibility. Re-inspection is always available from the model
+card and reads only the managed OPFS blob.
 
 Web Locks are the cross-tab coordination primitive in the Chrome-primary profile.
 Where they are absent, the same module serializes operations within one worker realm;
@@ -133,11 +262,12 @@ for transformed split output.
 
 **Decision:** The canonical product URL is `https://webai.meenan.dev/`. Astro builds
 for the origin root, so application routes, content-hashed assets, license files, and
-the future service worker use `/`-rooted URLs. The static/no-server constraint and
-D-023's release machinery do not change: builds still rsync to sibling releases under
-`/var/www/meenan.dev/` and promote through the
-`/var/www/meenan.dev/webai` symlink. Deployment smoke checks use the new public
-origin.
+the future service worker use `/`-rooted URLs. At acceptance time, the static/no-server
+constraint and D-023's release machinery did not change: builds still rsynced to
+sibling releases under `/var/www/meenan.dev/` and promoted through the
+`/var/www/meenan.dev/webai` symlink. D-027 later supersedes only that deployment
+mechanism; the origin and filesystem target remain unchanged. Deployment smoke checks
+use the public origin.
 
 COOP `same-origin` and COEP `require-corp` remain binding on successful HTML,
 application assets/workers, and errors. D-012's isolation-policy evidence remains
@@ -188,7 +318,7 @@ response; a required cross-origin resource fails CORS/CORP from the new origin; 
 project deliberately adds another application on the same subdomain; or the static
 release target moves and requires a new atomic-promotion design.
 
-## D-023: Production deploys use staged releases, an atomic symlink switch, and verified rollback  (2026-07-18, status: accepted)
+## D-023: Production deploys use staged releases, an atomic symlink switch, and verified rollback  (2026-07-18, status: superseded by D-027)
 
 **Decision:** `pnpm deploy` runs the complete local quality/license gate, rebuilds the
 release artifact, rsyncs into a new sibling release directory under

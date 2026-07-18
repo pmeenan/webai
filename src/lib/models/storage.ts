@@ -5,6 +5,7 @@ import type {
   InstalledModelRecord,
   LocalImportJobRecord,
   ModelFailure,
+  ModelFileRecord,
   ModelInventory,
   StorageSummary,
 } from "./types";
@@ -198,6 +199,52 @@ export async function getJob(jobId: string): Promise<AcquisitionJobRecord | unde
   );
   await done;
   return result;
+}
+
+export async function getModel(modelId: string): Promise<InstalledModelRecord | undefined> {
+  const database = await openModelDatabase();
+  const transaction = database.transaction("models", "readonly");
+  const done = transactionDone(transaction);
+  const result = await requestResult(
+    transaction.objectStore("models").get(modelId) as IDBRequest<InstalledModelRecord | undefined>,
+  );
+  await done;
+  return result;
+}
+
+export async function updateModelInspections(
+  modelId: string,
+  inspectedFiles: readonly ModelFileRecord[],
+): Promise<InstalledModelRecord | undefined> {
+  return await withMutationLock(async () => {
+    const database = await openModelDatabase();
+    const transaction = database.transaction("models", "readwrite");
+    const done = transactionDone(transaction);
+    const models = transaction.objectStore("models");
+    const current = await requestResult(
+      models.get(modelId) as IDBRequest<InstalledModelRecord | undefined>,
+    );
+    if (current === undefined) {
+      await done;
+      return undefined;
+    }
+    if (
+      inspectedFiles.length !== current.files.length ||
+      inspectedFiles.some(
+        (file, index) =>
+          file.blobId !== current.files[index]?.blobId ||
+          file.opfsPath !== current.files[index]?.opfsPath,
+      )
+    ) {
+      transaction.abort();
+      await done.catch(() => undefined);
+      throw storageFailure("The installed model changed while its metadata was inspected.");
+    }
+    const next: InstalledModelRecord = { ...current, files: inspectedFiles };
+    models.put(next);
+    await done;
+    return next;
+  });
 }
 
 export async function putJob(job: AcquisitionJobRecord): Promise<void> {

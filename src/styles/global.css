@@ -1152,6 +1152,28 @@ button {
   margin: var(--space-0);
 }
 
+.choice-actions {
+  display: flex;
+  min-width: min(100%, 18rem);
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.quant-list .companion-copy {
+  max-width: 24rem;
+  margin-block: var(--space-0);
+  color: var(--text-secondary);
+}
+
+.companion-help a {
+  color: var(--accent);
+}
+
+.metadata-warning {
+  margin-block-start: var(--space-3);
+}
+
 .quant-list p {
   margin-block-start: var(--space-1);
   overflow-wrap: anywhere;

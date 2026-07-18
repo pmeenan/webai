@@ -69,6 +69,13 @@ function sourceDescription(model: InstalledModelRecord): string {
   return `${model.source.repo} · ${model.source.commit.slice(0, 12)} · ${model.files.length} file${model.files.length === 1 ? "" : "s"}`;
 }
 
+function managedFileRole(displayName: string): string {
+  const filename = displayName.slice(displayName.lastIndexOf("/") + 1).toLowerCase();
+  if (filename.includes("mtp-")) return "MTP speculative-decoding companion";
+  if (filename.includes("mmproj")) return "Multimodal projector companion";
+  return "Primary model weights";
+}
+
 function JobCard({
   job,
   progress,
@@ -179,19 +186,23 @@ function JobCard({
 function ModelCard({
   model,
   deleting,
+  inspecting,
   blocked,
   confirmDelete,
   onAskDelete,
   onCancelDelete,
   onDelete,
+  onInspect,
 }: {
   readonly model: InstalledModelRecord;
   readonly deleting: boolean;
+  readonly inspecting: boolean;
   readonly blocked: boolean;
   readonly confirmDelete: boolean;
   readonly onAskDelete: () => void;
   readonly onCancelDelete: () => void;
   readonly onDelete: () => void;
+  readonly onInspect: () => void;
 }) {
   const inspection = model.files[0]?.inspection;
   return (
@@ -219,7 +230,9 @@ function ModelCard({
       <dl className="model-summary-list">
         <div>
           <dt>Format</dt>
-          <dd>GGUF v{inspection?.version ?? "?"}</dd>
+          <dd>
+            {inspection === undefined ? "Metadata unavailable" : `GGUF v${inspection.version}`}
+          </dd>
         </div>
         <div>
           <dt>Architecture</dt>
@@ -243,51 +256,76 @@ function ModelCard({
             aria-labelledby={`${model.id}-${file.blobId}`}
           >
             <h4 id={`${model.id}-${file.blobId}`}>{file.displayName}</h4>
+            <p className="model-file-role">Role: {managedFileRole(file.displayName)}</p>
             <p className="model-hash">SHA-256 {file.sha256}</p>
-            <dl className="model-summary-list compact">
-              <div>
-                <dt>Size</dt>
-                <dd>{formatBytes(file.size)}</dd>
+            {file.inspectionError === undefined ? null : (
+              <div className="model-alert metadata-warning">
+                <TriangleAlert aria-hidden="true" />
+                <p>
+                  Metadata inspection unavailable: {file.inspectionError.message} The verified model
+                  bytes remain installed.
+                </p>
               </div>
-              <div>
-                <dt>Metadata</dt>
-                <dd>{file.inspection.metadataCount.toLocaleString()} entries</dd>
-              </div>
-              <div>
-                <dt>Name</dt>
-                <dd>{file.inspection.name ?? "Not declared"}</dd>
-              </div>
-            </dl>
-            <div className="metadata-table-wrap">
-              <table className="metadata-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Key</th>
-                    <th scope="col">Type</th>
-                    <th scope="col">Value</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {file.inspection.entries.map((entry) => (
-                    <tr key={entry.key}>
-                      <th scope="row">{entry.key}</th>
-                      <td>{entry.type}</td>
-                      <td>{entry.value}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {file.inspection.omittedEntries > 0 ? (
-              <p>
-                {file.inspection.omittedEntries} additional entries omitted from the bounded
-                inspector.
-              </p>
-            ) : null}
+            )}
+            {file.inspection === undefined ? (
+              <dl className="model-summary-list compact">
+                <div>
+                  <dt>Size</dt>
+                  <dd>{formatBytes(file.size)}</dd>
+                </div>
+              </dl>
+            ) : (
+              <>
+                <dl className="model-summary-list compact">
+                  <div>
+                    <dt>Size</dt>
+                    <dd>{formatBytes(file.size)}</dd>
+                  </div>
+                  <div>
+                    <dt>Metadata</dt>
+                    <dd>{file.inspection.metadataCount.toLocaleString()} entries</dd>
+                  </div>
+                  <div>
+                    <dt>Name</dt>
+                    <dd>{file.inspection.name ?? "Not declared"}</dd>
+                  </div>
+                </dl>
+                <div className="metadata-table-wrap">
+                  <table className="metadata-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Key</th>
+                        <th scope="col">Type</th>
+                        <th scope="col">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {file.inspection.entries.map((entry) => (
+                        <tr key={entry.key}>
+                          <th scope="row">{entry.key}</th>
+                          <td>{entry.type}</td>
+                          <td>{entry.value}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {file.inspection.omittedEntries > 0 ? (
+                  <p>
+                    {file.inspection.omittedEntries} additional entries omitted from the bounded
+                    inspector.
+                  </p>
+                ) : null}
+              </>
+            )}
           </section>
         ))}
       </details>
       <div className="model-actions destructive-actions">
+        <Button onClick={onInspect} disabled={inspecting || deleting} aria-busy={inspecting}>
+          <RefreshCw aria-hidden="true" />
+          {inspecting ? "Inspecting metadata" : "Re-run metadata inspection"}
+        </Button>
         {confirmDelete ? (
           <>
             <p>This removes the managed bytes from this browser.</p>
@@ -480,12 +518,23 @@ export default function ModelManager() {
     }
   };
 
-  const startDownload = (choice: HuggingFaceArtifactChoice) => {
+  const startDownload = (choice: HuggingFaceArtifactChoice, includeMtp = false) => {
     const worker = client.current;
     if (worker === undefined || resolved === undefined) return;
     void withBusy(choice.id, async () => {
-      setStatus(`Starting ${choice.label}.`);
-      await worker.download(resolved, choice);
+      const mtp = includeMtp ? choice.optionalMtp : undefined;
+      const selectedChoice: HuggingFaceArtifactChoice =
+        mtp === undefined
+          ? choice
+          : {
+              ...choice,
+              id: `${choice.id}::mtp:${mtp.path}`,
+              label: `${choice.label} + ${mtp.path}`,
+              totalSize: choice.totalSize + mtp.size,
+              files: [...choice.files, mtp],
+            };
+      setStatus(`Starting ${selectedChoice.label}.`);
+      await worker.download(resolved, selectedChoice);
     });
   };
 
@@ -669,17 +718,50 @@ export default function ModelManager() {
                         {choice.files.length === 1 ? "" : "s"} · LFS SHA-256
                       </p>
                     </div>
-                    <Button
-                      onClick={() => startDownload(choice)}
-                      disabled={workerAvailable !== true || acquisitionBusy}
-                      aria-busy={busyIds.has(choice.id)}
-                    >
-                      <Download aria-hidden="true" />
-                      Download
-                    </Button>
+                    <div className="choice-actions">
+                      {choice.optionalMtp === undefined ? null : (
+                        <p className="companion-copy">
+                          Optional llama.cpp MTP companion: {choice.optionalMtp.path} ·{" "}
+                          {formatBytes(choice.optionalMtp.size)}
+                        </p>
+                      )}
+                      {choice.optionalMtp === undefined ? null : (
+                        <Button
+                          onClick={() => startDownload(choice, true)}
+                          disabled={workerAvailable !== true || acquisitionBusy}
+                          aria-busy={busyIds.has(choice.id)}
+                        >
+                          <Download aria-hidden="true" />
+                          Download model + MTP
+                        </Button>
+                      )}
+                      <Button
+                        onClick={() => startDownload(choice)}
+                        disabled={workerAvailable !== true || acquisitionBusy}
+                        aria-busy={busyIds.has(choice.id)}
+                      >
+                        <Download aria-hidden="true" />
+                        {choice.optionalMtp === undefined ? "Download" : "Download model only"}
+                      </Button>
+                    </div>
                   </li>
                 ))}
               </ul>
+              <p className="field-help companion-help">
+                MTP suggestions follow llama.cpp's filename and same-directory convention; the
+                Hugging Face API does not declare companion relationships. See the{" "}
+                <a
+                  href={`https://huggingface.co/${resolved.repo
+                    .split("/")
+                    .map(encodeURIComponent)
+                    .join("/")}/tree/${resolved.commit}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  pinned repository
+                </a>{" "}
+                for alternate companion precisions and usage notes.
+              </p>
             </div>
           )}
         </section>
@@ -692,8 +774,8 @@ export default function ModelManager() {
             <p className="eyebrow">Local files</p>
             <h2 id="local-import-title">Import GGUF files</h2>
             <p>
-              Select one GGUF or an entire existing shard set. Hashing, validation, and metadata
-              inspection stay in the model worker.
+              Select one GGUF or an entire existing shard set. Stored-copy verification and
+              best-effort metadata inspection stay in the model worker.
             </p>
           </div>
           <div
@@ -863,6 +945,7 @@ export default function ModelManager() {
                     key={model.id}
                     model={model}
                     deleting={busyIds.has(model.id)}
+                    inspecting={busyIds.has(`inspect:${model.id}`)}
                     blocked={acquisitionBusy}
                     confirmDelete={confirmDelete === model.id}
                     onAskDelete={() => setConfirmDelete(model.id)}
@@ -874,6 +957,11 @@ export default function ModelManager() {
                           await worker.delete(model.id);
                           setConfirmDelete(undefined);
                         });
+                    }}
+                    onInspect={() => {
+                      const worker = client.current;
+                      if (worker !== undefined)
+                        void withBusy(`inspect:${model.id}`, () => worker.inspect(model.id));
                     }}
                   />
                 ))}

@@ -16,6 +16,7 @@ export interface HuggingFaceArtifactChoice {
   readonly quantization: string;
   readonly totalSize: number;
   readonly files: readonly HuggingFaceFile[];
+  readonly optionalMtp?: HuggingFaceFile;
 }
 
 export interface ResolvedHuggingFaceRepository {
@@ -50,7 +51,8 @@ export interface ModelFileRecord {
   readonly size: number;
   readonly sha256: string;
   readonly opfsPath: string;
-  readonly inspection: GgufInspection;
+  readonly inspection?: GgufInspection;
+  readonly inspectionError?: ModelFailure;
 }
 
 export type ModelSource =
@@ -97,6 +99,7 @@ export interface DownloadJobFile {
   readonly phase: "pending" | "downloading" | "verifying" | "verified";
   readonly verifiedSha256?: string;
   readonly inspection?: GgufInspection;
+  readonly inspectionError?: ModelFailure;
 }
 
 export interface DownloadJobRecord {
@@ -122,6 +125,7 @@ export interface LocalImportJobFile {
   readonly phase: "pending" | "importing" | "verified";
   readonly verifiedSha256?: string;
   readonly inspection?: GgufInspection;
+  readonly inspectionError?: ModelFailure;
 }
 
 export interface LocalImportJobRecord {

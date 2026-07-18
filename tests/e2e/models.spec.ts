@@ -24,14 +24,14 @@ function ggufEntry(key: string, type: number, value: Buffer): Buffer {
   return Buffer.concat([ggufString(key), u32(type), value]);
 }
 
-function ggufFixture(size?: number): Buffer {
+function ggufFixture(size?: number, name = "Playwright fixture"): Buffer {
   const header = Buffer.concat([
     Buffer.from("GGUF"),
     u32(3),
     u64(0),
     u64(3),
     ggufEntry("general.architecture", 8, ggufString("llama")),
-    ggufEntry("general.name", 8, ggufString("Playwright fixture")),
+    ggufEntry("general.name", 8, ggufString(name)),
     ggufEntry("general.file_type", 4, u32(15)),
   ]);
   if (size === undefined) return header;
@@ -231,6 +231,81 @@ test("treats a queued first request as active instead of offering concurrent res
   await expect(partial).toContainText("paused");
 });
 
+test("offers llama.cpp's same-directory MTP companion without listing sidecars as models", async ({
+  page,
+}) => {
+  const fixture = ggufFixture();
+  const mtpFixture = ggufFixture(undefined, "MTP fixture");
+  const digest = createHash("sha256").update(fixture).digest("hex");
+  const mtpDigest = createHash("sha256").update(mtpFixture).digest("hex");
+  const downloaded: string[] = [];
+  await page.route("https://huggingface.co/api/models/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({
+        sha: commit,
+        siblings: [
+          {
+            rfilename: "model-Q4_K_XL.gguf",
+            size: fixture.byteLength,
+            lfs: { size: fixture.byteLength, sha256: digest },
+          },
+          {
+            rfilename: "mtp-model-Q4_0.gguf",
+            size: mtpFixture.byteLength,
+            lfs: { size: mtpFixture.byteLength, sha256: mtpDigest },
+          },
+          {
+            rfilename: "MTP/mtp-model-Q8_0.gguf",
+            size: 97_836_352,
+            lfs: { size: 97_836_352, sha256: "e".repeat(64) },
+          },
+          {
+            rfilename: "mmproj-F16.gguf",
+            size: 100,
+            lfs: { size: 100, sha256: "f".repeat(64) },
+          },
+        ],
+      }),
+    });
+  });
+  for (const [path, body] of [
+    ["model-Q4_K_XL.gguf", fixture],
+    ["mtp-model-Q4_0.gguf", mtpFixture],
+  ] as const) {
+    await page.route(
+      `https://huggingface.co/fixture/model/resolve/${commit}/${path}`,
+      async (route) => {
+        downloaded.push(path);
+        await fulfillRange(route, body, 0, body.byteLength - 1);
+      },
+    );
+  }
+  await page.goto("./models/");
+  await page.getByLabel("Model ID or URL").fill("fixture/model");
+  await page.getByRole("button", { name: "List files" }).click();
+  const resolved = page.getByTestId("resolved-repository");
+  await expect(resolved.locator(".quant-list > li")).toHaveCount(1);
+  await expect(resolved).toContainText("Optional llama.cpp MTP companion: mtp-model-Q4_0.gguf");
+  await expect(resolved.getByRole("button", { name: "Download model + MTP" })).toBeVisible();
+  await expect(resolved.getByRole("button", { name: "Download model only" })).toBeVisible();
+  await expect(resolved).not.toContainText("MTP/mtp-model-Q8_0.gguf");
+  await expect(resolved).not.toContainText("mmproj-F16.gguf");
+  await expect(resolved.getByRole("link", { name: "pinned repository" })).toHaveAttribute(
+    "href",
+    `https://huggingface.co/fixture/model/tree/${commit}`,
+  );
+  await resolved.getByRole("button", { name: "Download model + MTP" }).click();
+  const installed = page.locator("[data-model-id]");
+  await expect(installed).toContainText("2 files");
+  await installed.getByText("Inspect files and metadata").click();
+  await expect(installed).toContainText("MTP fixture");
+  await expect(installed).toContainText("Role: MTP speculative-decoding companion");
+  expect(downloaded).toEqual(["model-Q4_K_XL.gguf", "mtp-model-Q4_0.gguf"]);
+});
+
 test("imports and deletes a local GGUF without network traffic", async ({ page }) => {
   const unexpectedRequests: string[] = [];
   page.on("request", (request) => {
@@ -263,7 +338,9 @@ test("imports and deletes a local GGUF without network traffic", async ({ page }
   expect(unexpectedRequests).toEqual([]);
 });
 
-test("reports a malformed local file and never installs it", async ({ page }) => {
+test("installs integrity-checked local bytes when metadata inspection is unavailable", async ({
+  page,
+}) => {
   await page.goto("./models/");
   await expect(page.getByText("No managed models yet")).toBeVisible();
   await page.getByLabel("Choose GGUF files").setInputFiles({
@@ -271,8 +348,72 @@ test("reports a malformed local file and never installs it", async ({ page }) =>
     mimeType: "application/octet-stream",
     buffer: Buffer.from("not a gguf"),
   });
-  await expect(page.getByRole("alert")).toContainText("does not start with the GGUF magic bytes");
-  await expect(page.locator("[data-model-id]")).toHaveCount(0);
+  const installed = page.locator("[data-model-id]");
+  await expect(installed).toContainText("hostile.gguf");
+  await expect(installed).toContainText("Metadata unavailable");
+  await installed.getByText("Inspect files and metadata").click();
+  await expect(installed).toContainText("does not start with the GGUF magic bytes");
+  await expect(installed).toContainText("The verified model bytes remain installed");
+});
+
+test("re-runs metadata extraction from installed OPFS bytes without a source or network", async ({
+  page,
+}) => {
+  const unexpectedRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().startsWith("https://huggingface.co/")) unexpectedRequests.push(request.url());
+  });
+  await page.goto("./models/");
+  await expect(page.getByText("No managed models yet")).toBeVisible();
+  await page.getByLabel("Choose GGUF files").setInputFiles({
+    name: "reinspect-Q4_K_M.gguf",
+    mimeType: "application/octet-stream",
+    buffer: ggufFixture(),
+  });
+  const installed = page.locator("[data-model-id]");
+  await expect(installed).toContainText("Playwright fixture");
+
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("webai-v1");
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const transaction = database.transaction("models", "readwrite");
+    const store = transaction.objectStore("models");
+    const model = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const request = store.getAll();
+      request.addEventListener("success", () => resolve(request.result[0]), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const files = (model.files as Array<Record<string, unknown>>).map((file) => {
+      const identity = { ...file };
+      delete identity.inspection;
+      delete identity.inspectionError;
+      return {
+        ...identity,
+        inspectionError: {
+          code: "gguf-invalid",
+          phase: "inspect",
+          message: "Synthetic old-inspector failure.",
+          retryable: false,
+        },
+      };
+    });
+    store.put({ ...model, files });
+    await new Promise<void>((resolve, reject) => {
+      transaction.addEventListener("complete", () => resolve(), { once: true });
+      transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    });
+    database.close();
+  });
+
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(installed).toContainText("Metadata unavailable");
+  await installed.getByRole("button", { name: "Re-run metadata inspection" }).click();
+  await expect(installed).toContainText("Playwright fixture");
+  await expect(installed).not.toContainText("Synthetic old-inspector failure");
+  expect(unexpectedRequests).toEqual([]);
 });
 
 test("keeps an interrupted local import as explicit needs-source state", async ({ page }) => {

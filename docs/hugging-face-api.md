@@ -295,17 +295,37 @@ rejection matrix, Git-blob framing, finite jittered 429 backoff,
 interruption after a one-MiB durable write, page/worker restart, resume from actual
 OPFS length, final digest mismatch, local import/restart/delete, recoverable interrupted
 deletion, idempotent install, and malformed/truncated/oversized/duplicate GGUF metadata.
-M2 selects only LFS SHA-256 GGUF weight sets; Git-managed runtime companions remain
-deferred until an adapter supplies an explicit companion manifest rather than a
-filename heuristic. Additional storage tests cover reconcile/delete overlap,
+GGUF metadata inspection is best-effort and repeatable from installed OPFS bytes;
+remote size/LFS SHA-256 or local stored-copy equality gates installation instead.
+Additional storage tests cover reconcile/delete overlap,
 per-record oversized-partial degradation, orphan cleanup, and repair of a corrupt
 content-addressed blob from its verified partial. Local imports re-hash stored OPFS
 bytes before promotion.
 
+The same-day Gemma 4 check used
+`unsloth/gemma-4-E2B-it-qat-GGUF` at commit
+`66a399f68ddd113b06dff02fca9523e55465d11d`. Model info exposed each sibling's path,
+size, blob/LFS identity, plus repository-level `gguf` and `cardData`; none of those
+fields associated an MTP sidecar with a primary quant. The unstructured README and
+`MTP/README.md` state that root `mtp-gemma-4-E2B-it.gguf` is the recommended Q4_0
+drafter and pairs with any E2B QAT quant. Current llama.cpp independently implements a
+filename heuristic (checked at commit
+`571d0d540df04f25298d0e159e520d9fc62ed121`): exclude known sidecars from primary choices, then select an MTP
+in the same directory with the closest quantization bit width. M2 mirrors and labels
+that runtime convention for LFS MTP files, offers model-only or model-plus-MTP, and
+links the pinned repository for alternate precisions. It does not treat that heuristic
+as API metadata or parse model-card prose. Other companion types and Git-managed
+companions remain deferred to their runtime adapter contracts. The selected root MTP
+is a normal GGUF v3 container with `general.architecture` `gemma4-assistant`; WebAI
+uses the same bounded inspector but labels the file as an MTP speculative-decoding
+companion. RE-014 records why its hyphenated architecture metadata required removing
+WebAI's narrower, non-upstream key-character assumption.
+
 - **M2:** recheck the model-info/tree response shape and CORS; fixture-test hostile
   metadata, pagination, shard grouping, and the format-aware classifier that separates
-  weight artifacts/shards from Git-managed companions. Filenames/tags are untrusted
-  hints and an unknown role fails closed rather than silently becoming a companion.
+  weight artifacts/shards from known sidecar filename markers. Filenames/tags remain
+  untrusted hints: MTP association is labelled as a llama.cpp convention, restricted
+  to same-directory LFS files, and never presented as an HF-declared relationship.
   Also test missing/wrong integrity kinds, all range rejection cases, interruption
   after durable writes, resume after worker/page restart, final digest mismatch,
   Git-blob identity framing, and promotion visibility. Run at least one complete

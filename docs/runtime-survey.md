@@ -121,6 +121,24 @@ runtime contract needs these explicit dimensions:
    to the shared model manager. WebLLM 0.2.84 SRI covers its model library, config,
    and tokenizer—not parameter shards—so those shards need the separate HF-metadata
    path already assigned to M7.
+9. **Speculative-decoding mode:** the adapter declares whether an app can select a
+   separate MTP head, a generic assistant/draft model, or neither. This is scoped to
+   adapter and engine versions, model target, backend, and active session. Merely
+   finding an MTP artifact or finding support in an underlying native engine does not
+   prove that the JavaScript wrapper can mount, activate, or accelerate it (D-026).
+
+## MTP/speculative-decoding follow-up snapshot
+
+Source trees and published package contents were checked 2026-07-18. This is a
+milestone-start hypothesis ledger, not a permanent compatibility promise:
+
+| WebAI path | Current evidence | Planned verdict |
+| --- | --- | --- |
+| **wllama 3.5.1 / bundled llama.cpp `dd4623a`** | Bundled llama.cpp contains Gemma 4 MTP and `draft-mtp`. wllama exposes and forwards `spec_draft_*` fields, but does not expose llama.cpp's speculative type selector; its blob preparation also assigns only main-model shard and multimodal-projector roles, with no distinct draft/MTP role. The current wrapper therefore does not yet demonstrate an app-usable MTP path. | M3 runs the paired Gemma 4 browser experiment. If a supported mounting/selection path is found or added, run disabled/enabled A/B measurements; otherwise publish the exact unavailable reason. |
+| **Transformers.js 4.2.0** | A tagged-source search and its generation surface contain no assistant-model, draft-model, speculative-decoding, or MTP API. Python Transformers capabilities are not evidence for Transformers.js. | Recheck at M7 against the pinned package and prove any newly exposed path in a worker. |
+| **WebLLM 0.2.84** | The exact published npm package contains no speculative-decoding, draft-model, assistant-model, or MTP surface. | Recheck at M7 against the pinned package and compiled model-library contract. |
+| **LiteRT-LM 0.14.0** | The native runtime and CLI explicitly support Gemma 4 MTP, expose an enable flag, and contain acceptance statistics. The JavaScript package's `AdvancedSettings` binding omits the native `enable_speculative_decoding` field, so native support is not currently an app-controllable web capability. | M7 revalidates the early-preview JavaScript binding and runs browser A/B measurements only if enable/disable and compatible web artifacts are exposed. |
+| **Chrome Prompt API** | The browser chooses and manages its model and execution. WebAI cannot select an MTP artifact or toggle speculative decoding; undocumented internal implementation is not an app capability. | Declare controlled MTP testing unavailable unless a web API exposes the necessary control and evidence. |
 
 Heavy runtime packages and model catalogs are lazy-loaded behind their capability
 gates. Stable environment probes include wasm SIMD, JSPI, Memory64, wasm threads,
@@ -134,12 +152,21 @@ attributed to standalone ONNX Runtime Web 1.27.0 without a matching experiment.
 
 ## Primary sources checked
 
-All sources were checked 2026-07-17.
+Base-survey sources were checked 2026-07-17; the MTP follow-up sources were checked
+2026-07-18.
 
 - wllama: [3.5.1 package README](https://github.com/ngxson/wllama/blob/3.5.1/README.md),
   [v3 guide](https://github.com/ngxson/wllama/blob/3.5.1/guides/intro-v3.md),
   [compatibility package](https://github.com/ngxson/wllama/blob/3.5.1/compat/README.md),
   and [3.5.1 release](https://github.com/ngxson/wllama/releases/tag/3.5.1).
+- MTP follow-up: [wllama 3.5.1 load fields](https://github.com/ngxson/wllama/blob/3.5.1/src/types/types.ts),
+  [wllama blob role assignment](https://github.com/ngxson/wllama/blob/3.5.1/src/utils.ts),
+  [bundled llama.cpp MTP implementation](https://github.com/ggml-org/llama.cpp/blob/dd4623a74f0c85e6b1dd9ee99a92b9c67cac3708/common/speculative.cpp),
+  [Transformers.js 4.2.0 generation source](https://github.com/huggingface/transformers.js/tree/4.2.0/src),
+  [WebLLM 0.2.84 source snapshot](https://github.com/mlc-ai/web-llm/tree/9e572d6ed95e248f29634996cd32cc8f3023d89d/src),
+  [LiteRT-LM native MTP settings](https://github.com/google-ai-edge/LiteRT-LM/blob/v0.14.0/c/engine.h),
+  [LiteRT-LM JavaScript settings binding](https://github.com/google-ai-edge/LiteRT-LM/blob/v0.14.0/js/packages/core/src/cpp/litertlm_web.cc),
+  and [Prompt API model management](https://developer.chrome.com/docs/ai/prompt-api).
 - Transformers.js: [4.2 release](https://github.com/huggingface/transformers.js/releases/tag/4.2.0),
   [tagged source](https://github.com/huggingface/transformers.js/tree/4.2.0), and
   [open JSON Schema request](https://github.com/huggingface/transformers.js/issues/1328).

@@ -5,9 +5,11 @@ const maxHeaderBytes = 16 * 1024 * 1024;
 const maxMetadataEntries = 10_000;
 const maxDisplayedEntries = 128;
 const maxStringBytes = 1024 * 1024;
-const maxArrayItems = 100_000;
-const maxTotalArrayItems = 250_000;
+const maxMetadataKeyBytes = 1024;
+const maxArrayItems = 1_000_000;
+const maxTotalArrayItems = 2_000_000;
 const maxDisplayedArrayItems = 32;
+const maxTotalDisplayedArrayItems = 1024;
 const maxArrayDepth = 4;
 const maxDisplayCharacters = 512;
 
@@ -103,6 +105,11 @@ class Reader {
     return value;
   }
 
+  skip(length: number): void {
+    this.ensure(length);
+    this.offset += length;
+  }
+
   uint8(): number {
     this.ensure(1);
     const value = this.#view.getUint8(this.offset);
@@ -178,7 +185,7 @@ function safeCount(value: bigint | number, maximum: number, label: string, offse
   const count = typeof value === "bigint" ? Number(value) : value;
   if (!Number.isSafeInteger(count) || count < 0 || count > maximum) {
     throw new GgufParseError(
-      `The GGUF ${label} is outside the supported inspection bounds.`,
+      `The GGUF ${label} (${value.toString()}) is outside the supported inspection bounds (maximum ${maximum}).`,
       offset,
     );
   }
@@ -195,8 +202,8 @@ function hasInvalidStringControl(value: string): boolean {
   return false;
 }
 
-function readString(reader: Reader, label: string): string {
-  const length = safeCount(reader.uint64(), maxStringBytes, `${label} length`, reader.offset);
+function readString(reader: Reader, label: string, maximum = maxStringBytes): string {
+  const length = safeCount(reader.uint64(), maximum, `${label} length`, reader.offset);
   let value: string;
   try {
     value = new TextDecoder("utf-8", { fatal: true }).decode(reader.bytes(length));
@@ -217,6 +224,76 @@ interface ParsedValue {
 
 interface ParseBudget {
   remainingArrayItems: number;
+  remainingDisplayedArrayItems: number;
+}
+
+function skipString(reader: Reader, label: string): void {
+  const length = safeCount(reader.uint64(), maxStringBytes, `${label} length`, reader.offset);
+  reader.skip(length);
+}
+
+function readArrayHeader(
+  reader: Reader,
+  budget: ParseBudget,
+  arrayDepth: number,
+): { elementType: number; count: number } {
+  if (arrayDepth >= maxArrayDepth) {
+    throw new GgufParseError(
+      "The GGUF metadata array nesting exceeds the inspection limit.",
+      reader.offset,
+    );
+  }
+  const elementType = reader.uint32();
+  if (valueTypeNames[elementType] === undefined) {
+    throw new GgufParseError("The GGUF metadata array has an invalid element type.", reader.offset);
+  }
+  const count = safeCount(reader.uint64(), maxArrayItems, "array item count", reader.offset);
+  if (count > budget.remainingArrayItems) {
+    throw new GgufParseError(
+      `The GGUF metadata arrays exceed the total inspection limit of ${maxTotalArrayItems} items.`,
+      reader.offset,
+    );
+  }
+  budget.remainingArrayItems -= count;
+  return { elementType, count };
+}
+
+function skipTypedValues(
+  reader: Reader,
+  type: number,
+  count: number,
+  budget: ParseBudget,
+  arrayDepth: number,
+): void {
+  const fixedWidths = [1, 1, 2, 2, 4, 4, 4, undefined, undefined, undefined, 8, 8, 8];
+  const width = fixedWidths[type];
+  if (width !== undefined) {
+    reader.skip(count * width);
+    return;
+  }
+  if (type === 7) {
+    for (let index = 0; index < count; index += 1) {
+      const boolean = reader.uint8();
+      if (boolean !== 0 && boolean !== 1) {
+        throw new GgufParseError("The GGUF metadata contains an invalid boolean.", reader.offset);
+      }
+    }
+    return;
+  }
+  if (type === 8) {
+    for (let index = 0; index < count; index += 1) {
+      skipString(reader, "metadata string");
+    }
+    return;
+  }
+  if (type === 9) {
+    for (let index = 0; index < count; index += 1) {
+      const nested = readArrayHeader(reader, budget, arrayDepth);
+      skipTypedValues(reader, nested.elementType, nested.count, budget, arrayDepth + 1);
+    }
+    return;
+  }
+  throw new GgufParseError("The GGUF metadata value type is unsupported.", reader.offset);
 }
 
 function displayScalar(value: unknown): string {
@@ -275,34 +352,20 @@ function readTypedValue(
       raw = readString(reader, "metadata string");
       break;
     case 9: {
-      if (arrayDepth >= maxArrayDepth) {
-        throw new GgufParseError(
-          "The GGUF metadata array nesting exceeds the inspection limit.",
-          reader.offset,
-        );
-      }
-      const elementType = reader.uint32();
-      if (valueTypeNames[elementType] === undefined) {
-        throw new GgufParseError(
-          "The GGUF metadata array has an invalid element type.",
-          reader.offset,
-        );
-      }
-      const count = safeCount(reader.uint64(), maxArrayItems, "array item count", reader.offset);
-      if (count > budget.remainingArrayItems) {
-        throw new GgufParseError(
-          "The GGUF metadata arrays exceed the total inspection item limit.",
-          reader.offset,
-        );
-      }
-      budget.remainingArrayItems -= count;
+      const { elementType, count } = readArrayHeader(reader, budget, arrayDepth);
+      const displayedCount = Math.min(
+        count,
+        maxDisplayedArrayItems,
+        budget.remainingDisplayedArrayItems,
+      );
+      budget.remainingDisplayedArrayItems -= displayedCount;
       const displayed: string[] = [];
-      for (let index = 0; index < count; index += 1) {
+      for (let index = 0; index < displayedCount; index += 1) {
         const item = readTypedValue(reader, elementType, budget, arrayDepth + 1);
-        if (index < maxDisplayedArrayItems) displayed.push(item.display);
+        displayed.push(item.display);
       }
-      const suffix =
-        count > maxDisplayedArrayItems ? `, … ${count - maxDisplayedArrayItems} more` : "";
+      skipTypedValues(reader, elementType, count - displayedCount, budget, arrayDepth + 1);
+      const suffix = count > displayedCount ? `, … ${count - displayedCount} more` : "";
       return {
         type: `array<${valueTypeNames[elementType]}>`,
         raw: undefined,
@@ -354,13 +417,16 @@ export function parseGgufHeader(bytes: Uint8Array): GgufInspection {
   let name: string | undefined;
   let quantization: string | undefined;
   const keys = new Set<string>();
-  const budget: ParseBudget = { remainingArrayItems: maxTotalArrayItems };
+  const budget: ParseBudget = {
+    remainingArrayItems: maxTotalArrayItems,
+    remainingDisplayedArrayItems: maxTotalDisplayedArrayItems,
+  };
 
   for (let index = 0; index < metadataCount; index += 1) {
-    const key = readString(reader, "metadata key");
-    if (!/^[a-z0-9_]+(?:\.[a-z0-9_]+)*$/u.test(key) || keys.has(key)) {
+    const key = readString(reader, "metadata key", maxMetadataKeyBytes);
+    if (key.length === 0 || keys.has(key)) {
       throw new GgufParseError(
-        "The GGUF metadata contains an invalid or duplicate key.",
+        `The GGUF metadata contains ${key.length === 0 ? "an empty" : "a duplicate"} key.`,
         reader.offset,
       );
     }
