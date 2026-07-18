@@ -23,6 +23,84 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-011: Runtime survey scope — replace MediaPipe with LiteRT-LM  (2026-07-17, accepted)
+
+**Decision:** The evidence snapshot and complete comparison are recorded in
+[runtime-survey.md](runtime-survey.md). Apply these roadmap verdicts:
+
+- WebLLM remains confirmed for M7. Its Apache-2.0 license, active 0.2.84 release, and
+  current development satisfy D-010's condition. Its default catalog is not allowed:
+  although model data comes from HF, 0.2.84 fetches compiled model-library wasm from
+  an MLC GitHub repository. WebAI uses a custom catalog with HF model URLs and
+  revision-pinned, allowlisted records; mandatory WebLLM `integrity` hashes for the
+  model-library/config/tokenizer artifacts supported by 0.2.84; a separate HF-metadata
+  integrity path for parameter shards; and version-pinned, license-audited model
+  libraries bundled or self-hosted under `/webai/`. If those binaries cannot be
+  redistributed permissively, drop the affected catalog records or reopen the adapter
+  rather than broadening D-005 or weakening D-006 silently.
+- Reject MediaPipe LLM Inference as a new adapter. Google's current web guide marks
+  it maintenance-only and directs new web projects to LiteRT-LM. Independently, the
+  MediaPipe repository's 2026-06-05 privacy notice says MediaPipe Tasks send
+  performance/utilization metrics to Google and require user consent; no web opt-out
+  was found, which is incompatible with D-005 unless an experiment proves otherwise.
+- Select LiteRT-LM JavaScript as the Google packaged-model candidate for M7. It is
+  Apache-2.0, fully client-side, actively released, and adds `.litertlm` as a distinct
+  model path. Selection is provisional because 0.14's web API is early preview,
+  WebGPU/text-only with two documented Gemma 4 variants, and its worker and telemetry
+  behavior are not yet documented. Its package exports tool orchestration and a
+  constrained-decoding flag that the short web guide does not explain, so those also
+  need a model-level experiment. At M7 start it must demonstrate dedicated-worker
+  execution and no unexpected network traffic. Acquisition stays within D-005's
+  existing HF/local path: WebAI supplies a stored `Blob`/`ReadableStream` rather than
+  authorizing a new Google/CDN source. Otherwise drop the adapter rather than
+  weakening D-005 or D-007.
+- Keep direct ONNX Runtime Web parked under D-010. Transformers.js supplies its LLM
+  application layer; direct ORT remains a debugging escape hatch.
+- Park LiteRT.js for the same reason: it is an active, permissive `.tflite` graph
+  engine, but LiteRT-LM supplies the selected LLM application layer. Reopen direct
+  LiteRT.js for diagnostics or a distinct measured capability.
+- Do not add Sipp (young and currently overlaps wllama's GGUF/WebGPU path), Gerbil
+  (advertised source link was unavailable, so license/health cannot be verified), or
+  a Prompt API polyfill (a facade over already selected runtimes or remote services).
+- Do not add BrowserAI (facade over selected engines), torch-webgpu (browser execution
+  is still future work), or `ruvllm-wasm` (published browser package lacks a
+  demonstrated model-loading/token-generation inference path).
+
+More generally, runtime code, worker scripts, wasm, and compiled model-library
+binaries are application dependencies: pin, audit, content-hash, and serve them from
+`/webai/`. Only user-selected model data may use D-005's HF network path. This also
+forbids wllama's default jsDelivr fallback for Safari compatibility assets; install
+and self-host `@wllama/wllama-compat` instead.
+
+The Prompt API web surface is now recorded as available in stable Chrome from 148;
+Chrome 138 was the extension surface. Chrome still describes the web API as under
+development, with sampling parameters in an origin trial. This corrects stale feature
+text without changing D-007's window-only exception; adapter capabilities are probed
+rather than promised.
+
+**Context:** D-010 deliberately left the MediaPipe verdict and WebLLM health/license
+condition to current-source research. The survey checked official documentation,
+tagged source/package metadata, releases, licenses, and maintenance activity on
+2026-07-17. The selection gate was fixed in features.md: permissive, actively
+maintained, fully client-side, and adding a distinct backend, format, or capability.
+
+**Consequences:** Every runtime row in features.md now has a verdict. M7 contains
+Transformers.js, WebLLM, and provisionally LiteRT-LM; wllama and Prompt API retain
+their earlier M3/M4 positions. The adapter contract must expose acquisition
+ownership, executable-asset provenance, execution context, real backend mode,
+model-scoped modalities, and graded structured-output strength rather than a false
+lowest common denominator. Library-owned caches do not waive M2's resume-after-tab-close
+or HF-LFS integrity guarantees; the adapter must integrate WebAI's download manager or
+demonstrate equivalent behavior. These requirements feed architecture.md; exact
+versions and browser behavior are still re-verified when each adapter is built (root
+rule 4).
+
+**Reopen if:** WebLLM becomes unmaintained or non-permissive; LiteRT-LM cannot satisfy
+D-005/D-007 or its preview is abandoned; MediaPipe removes both maintenance-only and
+telemetry concerns while adding a capability LiteRT-LM lacks; direct ORT is needed to
+isolate a Transformers.js defect; or a screened runtime matures and demonstrates a
+distinct measured capability.
+
 ## D-010: M0 feature triage — scope verdicts  (2026-07-17, accepted)
 
 **Decision:** Full walk of every `proposed` features.md row and open question with
@@ -44,11 +122,13 @@ design must respect the hosting-spike isolation outcome); long-context/KV-growth
 sustained-throughput stress tests (new post-launch M11, keeping M8 shippable).
 
 *Conditional:* WebLLM is confirmed for M7 contingent on the M0 survey verifying its
-license and maintenance health — a red flag there reopens the verdict.
+license and maintenance health — a red flag there reopens the verdict. *(Resolved by
+D-011: the condition passed, subject to its recorded D-005/D-006 deployment rules.)*
 
 *Deferred to evidence:* MediaPipe LLM stays `proposed`; the M0 runtime survey's
 evidence (license, health, capability added vs. the cost of a new .task/.litertlm
-format pipeline) decides.
+format pipeline) decides. *(Resolved by D-011: MediaPipe was rejected and LiteRT-LM
+selected provisionally.)*
 
 *Parked:* direct ONNX Runtime Web (not via transformers.js) — reopen if isolating
 ORT behavior becomes necessary for debugging transformers.js issues.
@@ -159,8 +239,10 @@ out-of-process in the browser, so async main-thread calls do not block the UI.
 **Context:** Checked 2026-07-17 against
 https://developer.chrome.com/docs/ai/prompt-api: "The Prompt API isn't available in
 Web Workers for now, due to the complexity of establishing a responsible document for
-each worker." The API is stable as of Chrome 138, exposed to top-level windows and
-same-origin iframes, and runs only the browser-managed Gemini Nano model.
+each worker." At the time this entry was written, Chrome 138 was the stable extension
+surface; D-011 records the evolving web-page surface as available in stable Chrome
+from 148. It is exposed to top-level windows, same-origin iframes, and delegated
+cross-origin iframes, and runs only the browser-managed Gemini Nano model.
 
 **Consequences:** The runtime adapter contract cannot assume worker execution for
 every runtime; execution context is part of each adapter's capability declaration.

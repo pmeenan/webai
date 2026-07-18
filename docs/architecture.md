@@ -1,9 +1,10 @@
 # Architecture
 
 **Status: skeleton.** The first full draft is an M0 exit criterion
-([plan.md](plan.md)); the M0 runtime survey and hosting/HF-API spikes feed it. What is
-written here now is the load-bearing shape that planning conversations have already
-settled, so drafting can build on it rather than re-derive it.
+([plan.md](plan.md)); the completed M0 runtime survey and pending hosting/HF-API
+spikes feed it. What is written here now is the load-bearing shape that planning
+conversations and the [runtime survey](runtime-survey.md) have already settled, so
+drafting can build on it rather than re-derive it.
 
 ## Fixed points (from decisions)
 
@@ -19,8 +20,8 @@ settled, so drafting can build on it rather than re-derive it.
 ## Expected shape (to be validated in the M0 draft)
 
 The 2026-07-17 feature triage (D-010) confirmed the rows these bullets lean on; the
-survey-dependent runtime items still pending are the MediaPipe verdict and the
-WebLLM license/maintenance health check.
+runtime survey then closed the MediaPipe/WebLLM questions and selected LiteRT-LM as
+the replacement Google packaged-model candidate (D-011).
 
 - **Runtime adapter layer.** One `Runtime` interface (load model → session → stream
   tokens / abort → dispose, plus capability declaration and metric hooks) with
@@ -53,12 +54,51 @@ WebLLM license/maintenance health check.
 - **Chat surface.** Astro islands over the adapter layer; streaming UI; system
   prompt + generation params per session.
 
+## Survey-validated runtime landscape
+
+The evidence and per-version comparison live in
+[runtime-survey.md](runtime-survey.md). Its architecture consequences are
+load-bearing inputs to the full draft:
+
+- The survey identifies four acquisition-ownership cases: app-managed file/stream
+  (wllama, LiteRT-LM), library-managed caches (Transformers.js), a first-party
+  compiled model-library app asset plus library-managed HF-weight cache (WebLLM), and
+  browser-managed model (Prompt API). The architecture draft's still-open
+  storage-layout decision determines whether/how one WebAI manifest indexes native
+  caches; the survey does not silently settle that choice. D-005 requires every
+  executable runtime/worker/wasm asset to be version-pinned, license-audited,
+  content-hashed, and served from `/webai/`, never a library's default external CDN.
+  Native/library caches must still preserve M2's resume-after-tab-close and HF-LFS
+  integrity guarantees, either by accepting bytes from the shared download manager or
+  by demonstrating equivalent behavior; the architecture draft decides the mechanism.
+- Execution context is declared explicitly. Normal adapters run in a dedicated
+  worker (including libraries with their own worker machinery); Prompt API remains
+  the sole browser-managed, main-thread exception under D-007. LiteRT-LM does not
+  ship until worker viability is demonstrated.
+- Backend and model capability are separate. Each adapter publishes its real axes
+  (for example wllama thread count and GPU layer offload are independent and form a
+  matrix), while modality, tool templates, and constrained decoding are also checked
+  against the selected model at load time.
+- Structured output is graded, not boolean: none, prompt-and-validate, JSON
+  Schema-constrained, grammar-constrained, and tool-template support are distinct.
+  This prevents Transformers.js v4.2 tool templates from being mislabeled as
+  constrained output and preserves WebLLM/wllama-specific grammar capabilities.
+- Artifact identity includes runtime/version, source revision and integrity hash,
+  architecture, quantization, tokenizer/processor or multimodal projector, and
+  compiled model-library identity where applicable. Format name alone never proves
+  load compatibility.
+- Heavy adapters and catalogs are lazy-loaded. Capability probes include wasm SIMD,
+  JSPI, Memory64, wasm threads, `crossOriginIsolated`, WebGPU features/limits, and
+  WebNN device types; successful session creation remains the final per-model gate.
+
 ## Open architecture questions
 
 Tracked as features.md "Open questions" plus:
 
-- Worker topology per runtime: which libraries tolerate running fully in a dedicated
-  worker vs. require main-thread pieces (WebGPU device sharing, DOM needs)?
+- Worker topology per runtime: whether the adapter owns a library's internal worker or
+  hosts the library inside WebAI's worker, plus lifecycle/recovery behavior. Prompt API
+  is the only accepted main-thread path; any other main-thread requirement means
+  rejecting that runtime or recording a new D-007 exception before implementation.
 - Cross-origin isolation strategy (features.md Q1) — decides whether multi-threaded
   wasm and `measureUserAgentSpecificMemory` are available at all.
 - How runtime adapters and their heavyweight deps are code-split so the landing

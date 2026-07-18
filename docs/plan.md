@@ -27,12 +27,15 @@ owner plus targeted research/spikes where a decision needs evidence.
       MediaPipe verdict + WebLLM health check → runtime survey; open question 1 +
       question 8 validation → hosting spike; questions 3/4 → architecture draft.
       The exit criteria below still gate M0 on all of these closing.)*
-- [ ] Runtime/backend survey (current sources, not training knowledge — root rule 4):
+- [x] Runtime/backend survey (current sources, not training knowledge — root rule 4):
       for each candidate runtime (wllama, transformers.js, WebLLM, MediaPipe,
       ONNX Runtime Web, Prompt API, others discovered), document version, formats,
       backends, threading/isolation requirements, multimodal and structured-output
       support, license, and maintenance health. Output: a comparison table feeding
       architecture.md and the runtime-adapter design.
+      *(Done 2026-07-17: [runtime-survey.md](runtime-survey.md), scope verdicts in
+      D-011. WebLLM's condition passed; maintenance-only MediaPipe was rejected and
+      its successor LiteRT-LM selected provisionally for M7.)*
 - [ ] Hosting-constraints spike: COOP/COEP options on meenan.dev static hosting vs.
       Hugging Face CORS behavior (downloads + API), `/webai/` base path, header
       configuration for the rsync deploy target, and the shared-origin storage
@@ -54,8 +57,8 @@ owner plus targeted research/spikes where a decision needs evidence.
       design system doc) is warranted from M1.
 - [x] Rewrite the provisional ladder below into real milestones with exit criteria
       (D-008; the 2026-07-17 triage (D-010) then resolved the provisional
-      *(triage)* markers — the MediaPipe verdict and the WebLLM health check remain
-      survey-dependent).
+      *(triage)* markers, and the runtime survey closed its remaining MediaPipe and
+      WebLLM conditions in D-011).
 
 **Exit criteria:** every checklist item above is checked; every `proposed` row in
 features.md is resolved **and every features.md open question answered**, with
@@ -73,8 +76,8 @@ the live site can do.
 
 Scope is at deliverable granularity; the tech lead breaks a milestone into finer
 tasks when work on it starts. The M0 feature triage (D-010) resolved the former
-*(triage)* markers; the remaining provisional items are survey-owned — the MediaPipe
-verdict and the WebLLM license/maintenance health check (both M7, D-010).
+*(triage)* markers; the runtime survey then closed the remaining conditions and
+selected the M7 runtime set (D-011).
 
 ### M1 — Shell, toolchain, live deploy  `pending`
 
@@ -130,10 +133,12 @@ multi-GB quants that make splitting mandatory (D-009).
 - [ ] Split-on-demand over already-stored files: user imports and any pre-split
       downloads run through the same splitter against OPFS — the streaming download
       stage is not the only path (D-009).
-- [ ] wllama runtime adapter — the first `Runtime` implementation; CPU
-      single/multi-thread and WebGPU backends per capability gating (WebGPU is on by
-      default since wllama v3.1 — README checked 2026-07-17). Verify current
-      shard-size limits and split-output compatibility at build time (root rule 4).
+- [ ] wllama runtime adapter — the first `Runtime` implementation; one/many wasm
+      threads plus optional partial/full WebGPU layer offload as independent axes
+      (WebGPU is on by default since wllama v3.1 — README checked 2026-07-17). Verify
+      current shard-size limits and split-output compatibility at build time; bundle
+      and self-host every runtime/worker/wasm asset, including the compat package,
+      rather than allowing its default jsDelivr fallback (D-005, RE-002).
 - [ ] Streaming chat UI over the adapter.
 - [ ] Live per-response metrics from the first message: model load time,
       time-to-first-token, prefill/decode tok/s — every chat is a measurement.
@@ -186,17 +191,29 @@ supported), manage histories, and see context usage while testing.
 
 ### M7 — Runtime breadth  `pending`
 
-Goal: the adapter layer earns its keep. Depends on M0: runtime survey
-(health-checks WebLLM, decides MediaPipe; direct ONNX Runtime Web is parked —
-D-010).
+Goal: the adapter layer earns its keep. The M0 survey selected WebLLM and the
+early-preview LiteRT-LM, rejected maintenance-only MediaPipe, and kept direct ONNX
+Runtime Web parked (D-011).
 
 - [ ] transformers.js adapter: wasm / WebGPU / WebNN backends, per-backend gating,
-      its own model-cache accounting story (features.md open question 3) — this is
-      where cross-runtime cache accounting from the M2 storage UI becomes real.
+      its own model-cache accounting story (features.md open question 3), and a
+      download path that integrates or experimentally demonstrates M2's
+      resume-after-tab-close and HF-LFS integrity guarantees — this is where
+      cross-runtime cache accounting from the M2 storage UI becomes real.
 - [ ] ONNX metadata parsing joins the model inspector (same D-006 discipline as the
       M2 GGUF parser; the ONNX side arrives with the format's first runtime).
-- [ ] WebLLM adapter (confirmed contingent on the survey's license/maintenance
-      check, D-010); any other survey-selected runtimes each with a decision entry.
+- [ ] WebLLM adapter: custom MLC-compiled catalog with HF model data and
+      version-pinned, license-audited, content-hashed model-library wasm served from
+      `/webai/` (never the default GitHub binary URLs); allowlisted revision-pinned
+      records and mandatory WebLLM `integrity` hashes for model-library/config/tokenizer
+      artifacts; independently verify parameter shards against HF metadata because
+      0.2.84's integrity type does not cover them, and preserve M2 resume-after-tab-close
+      semantics; WebGPU-only gating, worker lifecycle, image/VLM and XGrammar
+      capabilities (D-005, D-006, D-011, RE-004).
+- [ ] LiteRT-LM adapter, contingent on milestone-start revalidation of its early
+      preview, no-telemetry behavior, dedicated-worker viability, and the package's
+      lightly documented tool/constrained-decoding surface with web model artifacts;
+      drop it rather than violate D-005 or D-007 (D-011).
 - [ ] Structured output testing (JSON schema / GBNF / Prompt API constraints) as
       per-adapter capability work — each adapter declares and demonstrates what it
       supports.
@@ -205,7 +222,8 @@ D-010).
 **Exit criteria:** every adapter added in this milestone demonstrates a
 representative model on each backend the browser supports; the same prompt runs
 side-by-side across at least two runtimes (same model where formats allow,
-equivalent models otherwise); and every impossible combination is labeled with the
+equivalent models otherwise); every library-native model download demonstrates the
+M2 resume/integrity guarantees; and every impossible combination is labeled with the
 reason.
 
 ### M8 — Benchmark harness  `pending`

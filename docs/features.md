@@ -1,9 +1,9 @@
 # Feature matrix
 
 The scope ledger. The M0 feature triage (2026-07-17, owner walk — verdicts and
-rationale in D-010) resolved every `proposed` row except MediaPipe (the M0 runtime
-survey decides) and answered open questions 2, 5, 6, 7, and 8; questions 1, 3, and 4
-remain open, owned by the M0 hosting spike and architecture draft.
+rationale in D-010) plus the runtime survey (D-011) resolved every `proposed` row and
+answered open questions 2, 5, 6, 7, and 8; questions 1, 3, and 4 remain open, owned
+by the M0 hosting spike and architecture draft.
 
 - **Confirmed** — stated project scope. Milestone assignment lives in
   [plan.md](plan.md); milestone references in notes here are informative.
@@ -22,7 +22,7 @@ Status legend: `confirmed · proposed · parked (D-NNN) · rejected (D-NNN)`
 | Local model management in OPFS (list, inspect, delete, storage usage) | confirmed | |
 | User-provided model import (file picker / drag-drop, incl. multi-file sharded models) | confirmed | |
 | GGUF splitting via a wasm build of llama.cpp's gguf-split | confirmed | Modified tooling, upstream MIT; runs as a streaming stage of the download pipeline (D-009) |
-| Resumable, integrity-checked downloads (HTTP Range + hash from HF LFS metadata, survive tab close) | confirmed | M2. Multi-GB files over flaky connections; re-downloading from zero is brutal (D-010) |
+| Resumable, integrity-checked downloads (HTTP Range + hash from HF LFS metadata, survive tab close) | confirmed | M2 for app-managed files; M7 adapters with native caches must integrate the shared path or demonstrate equivalent behavior. Multi-GB files over flaky connections; re-downloading from zero is brutal (D-010, D-011) |
 | HF token support for gated models (Llama, Gemma; token stored locally only) | confirmed | M5. Many of the most-tested model families are gated (D-010) |
 | Surface model license + gating status before download | confirmed | M5. Low cost, keeps users out of accidental license trouble (D-010) |
 | Model file metadata inspector (GGUF/ONNX header: arch, context length, quant per-tensor, chat template) | confirmed | GGUF side lands M2 — doubles as the download-verification surface before inference exists; ONNX side lands M7 with the format's first runtime (D-010) |
@@ -32,12 +32,13 @@ Status legend: `confirmed · proposed · parked (D-NNN) · rejected (D-NNN)`
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| wllama (llama.cpp wasm; CPU single/multi-thread + WebGPU) | confirmed | Multi-thread needs SharedArrayBuffer → COOP/COEP (see architecture open questions). WebGPU is on by default since wllama v3.1; v3.5.1 current, MIT (README checked 2026-07-17) |
-| transformers.js (wasm / WebGPU / WebNN via ONNX Runtime Web) | confirmed | |
-| Chrome built-in Prompt API, including model download flow | confirmed | Browser-managed Gemini Nano only — a separate acquisition path from HF downloads; window-only, not available in workers (D-007); Chrome 138+ stable (checked 2026-07-17). Availability/API state changes fast — re-verify when building (root rule 4) |
-| Additional runtimes selected by the M0 survey | confirmed | Bounded scope: the M0 survey produces the candidate list against fixed criteria (permissive license, actively maintained, fully client-side, adds a distinct backend/format/capability); post-survey additions each need a decision entry |
-| WebLLM (MLC) — the de-facto standard WebGPU LLM runtime | confirmed | M7, contingent on the M0 survey verifying license + maintenance health — a red flag there reopens the verdict (D-010) |
-| MediaPipe LLM Inference API | proposed | Google's packaged web LLM path; .task/.litertlm formats. The M0 survey's evidence decides (D-010) |
+| wllama (llama.cpp wasm; CPU single/multi-thread + WebGPU) | confirmed | Thread count and WebGPU layer offload are independent; every multi-thread combination needs SharedArrayBuffer → COOP/COEP (see architecture open questions). WebGPU is on by default since wllama v3.1; v3.5.1 current, MIT. Runtime/compat wasm is self-hosted; the default jsDelivr fallback is forbidden by D-005 (surveyed 2026-07-17, D-011) |
+| transformers.js (wasm / WebGPU / WebNN via ONNX Runtime Web) | confirmed | v4.2.0 current; WebNN exists in tagged source but remains per-model/browser experimental and must be measured (D-011) |
+| Chrome built-in Prompt API, including model download flow | confirmed | Browser-managed Gemini Nano only — a separate acquisition path from HF downloads; window-only, not available in workers (D-007); available to web pages in stable Chrome from 148, but the web API remains under development and sampling parameters remain in an origin trial (Chrome 138 was the extension surface; corrected by D-011). Availability/API state changes fast — re-verify when building (root rule 4) |
+| Additional runtimes selected by the M0 survey | confirmed | Survey closed (D-011): LiteRT-LM selected provisionally; WebLLM's condition passed. Post-survey additions each need a decision entry and the same fixed criteria (permissive, active, fully client-side, distinct capability) |
+| WebLLM (MLC) — the de-facto standard WebGPU LLM runtime | confirmed | M7; Apache-2.0 and active at 0.2.84, so D-010's survey condition passed. D-005 requires a custom HF-only model catalog and version-pinned first-party model-library wasm instead of the default GitHub binary URLs (D-011) |
+| LiteRT-LM JavaScript (`.litertlm`, WebGPU) | confirmed | M7, provisional because the 0.14 web API is early preview; revalidate no-telemetry behavior and dedicated-worker viability before implementation (D-011) |
+| MediaPipe LLM Inference API | rejected (D-011) | Maintenance-only and superseded by LiteRT-LM; its documented Tasks metrics also conflict with D-005 unless proven disableable |
 | ONNX Runtime Web used directly (not through transformers.js) | parked (D-010) | Reopen if isolating ORT behavior from transformers.js becomes necessary for debugging |
 | Runtime/backend capability report (WebGPU adapter+features+limits incl. shader-f16, wasm SIMD/threads, WebNN device types, crossOriginIsolated, quota) | confirmed | M1 — the "why doesn't X work here" diagnostic; also the suitability-filter input (D-010) |
 
@@ -83,7 +84,7 @@ Status legend: `confirmed · proposed · parked (D-NNN) · rejected (D-NNN)`
 ## Open questions
 
 Questions 2, 5, 6, 7, and 8 were answered at the 2026-07-17 triage (D-010); 1, 3,
-and 4 remain open.
+and 4 remain open. The only remaining `proposed` runtime row was resolved by D-011.
 
 1. **Cross-origin isolation.** *Open — M0 hosting spike.* wllama multi-thread and
    `measureUserAgentSpecificMemory` need `crossOriginIsolated` (COOP/COEP headers),
