@@ -1,14 +1,16 @@
 # Architecture
 
 **Status: skeleton.** The first full draft is an M0 exit criterion
-([plan.md](plan.md)); the completed M0 runtime survey and pending hosting/HF-API
-spikes feed it. What is written here now is the load-bearing shape that planning
-conversations and the [runtime survey](runtime-survey.md) have already settled, so
-drafting can build on it rather than re-derive it.
+([plan.md](plan.md)); the completed M0 runtime survey and hosting spike plus the
+pending HF-API spike feed it. What is written here now is the load-bearing shape that
+planning conversations and the [runtime survey](runtime-survey.md) have already
+settled, so drafting can build on it rather than re-derive it.
 
 ## Fixed points (from decisions)
 
 - Static Astro site, base path `/webai/`, rsync deploy, no server code (D-001).
+- The whole app is cross-origin isolated in place with COOP `same-origin` + COEP
+  `require-corp`; `/webai/` remains on the shared `meenan.dev` origin (D-012).
 - All user state client-side: models and large artifacts in OPFS, settings/history in
   IndexedDB or localStorage as appropriate; no telemetry (root constraints).
 - Chrome-primary with per-capability gating, not browser gating (D-004).
@@ -38,6 +40,16 @@ the replacement Google packaged-model candidate (D-011).
   from under the manifest is a defined, reported state, not a crash.
   Consumed by runtime gating and the model-suitability filters; the user-facing
   environment report built on it lands in M1 (D-010).
+- **Hosting and isolation.** Production nginx applies COOP `same-origin` and COEP
+  `require-corp` to `/webai/`; the deployed page and workers still probe
+  `crossOriginIsolated` rather than assuming correct configuration. All external
+  artifacts use CORS-mode fetches. Browser testing against current HF API, resolver,
+  Authorization-preflight, signed-CDN redirect, and Range paths passed under
+  `require-corp` (D-012; [spike evidence](hosting-constraints.md)). A service worker
+  stays at `/webai/sw.js` with `/webai/` scope and preserves isolation headers in
+  cached responses. OPFS/IndexedDB/Cache names and `localStorage` keys are
+  WebAI-prefixed for hygiene, but storage, quota, persistence, and same-origin trust
+  remain origin-wide; WebAI owns its finer-grained byte manifest.
 - **Model store.** Likely a single OPFS-backed store with its own manifest (source,
   revision, hashes, size, format metadata) — single store vs. per-runtime native
   caches is features.md open question 3 — plus a download manager (streaming progress,
@@ -99,7 +111,5 @@ Tracked as features.md "Open questions" plus:
   hosts the library inside WebAI's worker, plus lifecycle/recovery behavior. Prompt API
   is the only accepted main-thread path; any other main-thread requirement means
   rejecting that runtime or recording a new D-007 exception before implementation.
-- Cross-origin isolation strategy (features.md Q1) — decides whether multi-threaded
-  wasm and `measureUserAgentSpecificMemory` are available at all.
 - How runtime adapters and their heavyweight deps are code-split so the landing
   experience stays light.

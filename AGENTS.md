@@ -71,6 +71,7 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 | [docs/decisions.md](docs/decisions.md) | Settled choices (D-NNN). Scan headings and read only the entries your task touches |
 | [docs/rough-edges.md](docs/rough-edges.md) | Platform/library findings log (RE-NNN). Grep before adding a finding or debugging browser weirdness |
 | [docs/runtime-survey.md](docs/runtime-survey.md) | M0 runtime/backend evidence snapshot, capability comparison, and adapter-design inputs |
+| [docs/hosting-constraints.md](docs/hosting-constraints.md) | Hosting/nginx, cross-origin isolation, HF CORS, base-path, and shared-origin evidence |
 
 ## Rules for all agents
 

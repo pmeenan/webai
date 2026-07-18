@@ -1,9 +1,9 @@
 # Feature matrix
 
 The scope ledger. The M0 feature triage (2026-07-17, owner walk — verdicts and
-rationale in D-010) plus the runtime survey (D-011) resolved every `proposed` row and
-answered open questions 2, 5, 6, 7, and 8; questions 1, 3, and 4 remain open, owned
-by the M0 hosting spike and architecture draft.
+rationale in D-010) plus the runtime survey (D-011) resolved every `proposed` row.
+The hosting spike (D-012) answered question 1 and validated question 8; only questions
+3 and 4 remain open, both owned by the M0 architecture draft.
 
 - **Confirmed** — stated project scope. Milestone assignment lives in
   [plan.md](plan.md); milestone references in notes here are informative.
@@ -32,7 +32,7 @@ Status legend: `confirmed · proposed · parked (D-NNN) · rejected (D-NNN)`
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| wllama (llama.cpp wasm; CPU single/multi-thread + WebGPU) | confirmed | Thread count and WebGPU layer offload are independent; every multi-thread combination needs SharedArrayBuffer → COOP/COEP (see architecture open questions). WebGPU is on by default since wllama v3.1; v3.5.1 current, MIT. Runtime/compat wasm is self-hosted; the default jsDelivr fallback is forbidden by D-005 (surveyed 2026-07-17, D-011) |
+| wllama (llama.cpp wasm; CPU single/multi-thread + WebGPU) | confirmed | Thread count and WebGPU layer offload are independent; every multi-thread combination needs SharedArrayBuffer → the app-wide COOP/COEP policy in D-012. WebGPU is on by default since wllama v3.1; v3.5.1 current, MIT. Runtime/compat wasm is self-hosted; the default jsDelivr fallback is forbidden by D-005 (surveyed 2026-07-17, D-011) |
 | transformers.js (wasm / WebGPU / WebNN via ONNX Runtime Web) | confirmed | v4.2.0 current; WebNN exists in tagged source but remains per-model/browser experimental and must be measured (D-011) |
 | Chrome built-in Prompt API, including model download flow | confirmed | Browser-managed Gemini Nano only — a separate acquisition path from HF downloads; window-only, not available in workers (D-007); available to web pages in stable Chrome from 148, but the web API remains under development and sampling parameters remain in an origin trial (Chrome 138 was the extension surface; corrected by D-011). Availability/API state changes fast — re-verify when building (root rule 4) |
 | Additional runtimes selected by the M0 survey | confirmed | Survey closed (D-011): LiteRT-LM selected provisionally; WebLLM's condition passed. Post-survey additions each need a decision entry and the same fixed criteria (permissive, active, fully client-side, distinct capability) |
@@ -83,15 +83,15 @@ Status legend: `confirmed · proposed · parked (D-NNN) · rejected (D-NNN)`
 
 ## Open questions
 
-Questions 2, 5, 6, 7, and 8 were answered at the 2026-07-17 triage (D-010); 1, 3,
-and 4 remain open. The only remaining `proposed` runtime row was resolved by D-011.
+Questions 2, 5, 6, 7, and 8 were answered at the 2026-07-17 triage (D-010), and the
+hosting spike answered question 1 while validating question 8 (D-012). Questions 3
+and 4 remain open. The final `proposed` runtime row was resolved by D-011.
 
-1. **Cross-origin isolation.** *Open — M0 hosting spike.* wllama multi-thread and
-   `measureUserAgentSpecificMemory` need `crossOriginIsolated` (COOP/COEP headers),
-   but COEP constrains cross-origin fetches (HF downloads/APIs) and any embedded
-   content. Serve the whole app isolated, only some routes, or use
-   `COEP: credentialless`? Needs a spike against real HF endpoints and the meenan.dev
-   server config.
+1. **Cross-origin isolation.** *Answered (D-012):* isolate the whole WebAI app with
+   `COOP: same-origin` and `COEP: require-corp`. Chrome 150 successfully fetched the
+   HF API plus small and ranged LFS/Xet artifacts—including Authorization preflight
+   and redirects—from an isolated page, so `credentialless` adds no needed
+   capability. M1 repeats the probe from production.
 2. **Mobile.** *Answered (D-010): best-effort.* Nothing is gated on mobile; it works
    where it works, failures are logged as rough-edges findings, and v1 makes no
    mobile-specific UX investment.
@@ -110,8 +110,8 @@ and 4 remain open. The only remaining `proposed` runtime row was resolved by D-0
 7. **Dataset format for benchmarks.** *Answered (D-010):* bring-your-own JSON against
    a documented schema, plus one small bundled default set with a verified-permissive
    license so benchmarking demos out of the box.
-8. **Shared-origin storage.** *Answered (D-010), pending spike verification:* the
-   owner's preference is to stay at https://meenan.dev/webai/ and explicitly accept
-   the shared-origin storage/security model (the origin currently hosts only a
-   placeholder page, checked 2026-07-17). The M0 hosting spike verifies there is no
-   blocker; a blocker would reopen this and supersede D-001.
+8. **Shared-origin storage.** *Answered (D-010), verified (D-012):* stay at
+   https://meenan.dev/webai/ and explicitly accept the shared-origin storage/security
+   model. Live nginx inspection, browser HF CORS measurements, and specification-based
+   origin-storage/service-worker analysis found no blocker. A dedicated domain
+   remains the owner-approved fallback if a D-012 reopen trigger appears.

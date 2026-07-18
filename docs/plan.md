@@ -36,16 +36,22 @@ owner plus targeted research/spikes where a decision needs evidence.
       *(Done 2026-07-17: [runtime-survey.md](runtime-survey.md), scope verdicts in
       D-011. WebLLM's condition passed; maintenance-only MediaPipe was rejected and
       its successor LiteRT-LM selected provisionally for M7.)*
-- [ ] Hosting-constraints spike: COOP/COEP options on meenan.dev static hosting vs.
+- [x] Hosting-constraints spike: COOP/COEP options on meenan.dev static hosting vs.
       Hugging Face CORS behavior (downloads + API), `/webai/` base path, header
       configuration for the rsync deploy target, and the shared-origin storage
       question (OPFS/IndexedDB/quota are origin-scoped — path vs. dedicated origin).
       Output: a decision on the isolation strategy (features.md open question 1)
       and validation of the accepted `/webai/` shared-origin preference (question 8,
       D-010) — the origin choice reopens only if the spike finds a blocker.
+      *(Done 2026-07-17: D-012 keeps the shared path and selects COOP `same-origin` +
+      COEP `require-corp`; the live-host inspection and Chrome HF API/resolver/range
+      experiment are recorded in [hosting-constraints.md](hosting-constraints.md).)*
 - [ ] Hugging Face API spike: search/filter capabilities of the public REST API from
       a browser client (rate limits, CORS, what "browser-suitable" filters are
       actually expressible), LFS metadata for integrity/resume.
+      *(Consumes RE-005: expiring, range-bound Xet URLs and a separate
+      browser-readable metadata path for commit/linked size/hash; and RE-006:
+      rate-limit headers are not CORS-exposed, so backoff must be reactive.)*
 - [ ] First full draft of [architecture.md](architecture.md): runtime adapter
       abstraction, worker topology, storage layout, download manager, capability
       gating, benchmark harness design.
@@ -170,7 +176,8 @@ Goal: discovery without leaving the app.
 - [ ] Basic suitability hints (file size vs. quota/memory); full capability-based
       filtering stays in M10.
 - [ ] Model license + gating status surfaced pre-download; HF token for gated models
-      (stored locally only).
+      (stored locally only). Before this path ships, verify a valid-token gated model
+      and its signed redirect in a browser; D-012 proved Authorization preflight only.
 
 **Exit criteria:** a user finds, evaluates, and downloads a suitable model entirely
 in-app; the manual-entry path from M2 remains as the escape hatch.
@@ -272,7 +279,9 @@ and ship.
 - [ ] Shareable config permalinks (model+runtime+params in the URL — config only,
       never results).
 - [ ] Diagnostics pane / exportable diagnostic report.
-- [ ] PWA/offline (service-worker design per the hosting-spike isolation outcome).
+- [ ] PWA/offline (service-worker design per the hosting-spike isolation outcome):
+      verify root- and `/webai/`-scope registrations coexist and every cached/offline
+      navigation preserves the isolation headers.
 - [ ] Docs/guides, design polish, launch.
 
 **Exit criteria:** a first-time visitor on any modern browser gets an honest,

@@ -25,6 +25,55 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-006: Hugging Face rate-limit headers are not CORS-exposed  (2026-07-17, status: open)
+
+**Environment:** Google Chrome 150.0.7871.128 on Linux 6.17.0-40, isolated localhost
+page; direct response-header comparison with `Origin: https://meenan.dev`, checked
+2026-07-17. **Repro or measurement:** Fetch
+`https://huggingface.co/api/models?limit=1` in the browser and read
+`response.headers.get("ratelimit")`; compare with the same response outside the CORS
+filter. **Observed:** The network response includes `RateLimit` and
+`RateLimit-Policy`, but HF's `Access-Control-Expose-Headers` list omits both, so
+browser JavaScript receives `null`. Pagination `Link`, request ID, error, range, and
+artifact-identity headers are exposed. **Expected:** A browser API client could inspect
+the service's documented quota state and wait until reset before receiving a 429.
+**Impact on WebAI:** The M0 HF API spike must design reactive 429/backoff behavior
+without assuming the quota headers are readable; the UI cannot promise a proactive
+remaining-request count. Recheck before implementation because this is an external
+response policy. **Links:** [HF rate-limit documentation](https://huggingface.co/docs/hub/main/rate-limits),
+[Access-Control-Expose-Headers](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Expose-Headers).
+
+## RE-005: Hugging Face Xet resume URLs are expiring and range-bound  (2026-07-17, status: open)
+
+**Environment:** Google Chrome 150.0.7871.128 and curl 8.5.0 on Linux 6.17.0-40;
+public HF resolver/Xet CDN, checked 2026-07-17. **Repro or measurement:** Request
+`Range: bytes=0-0` for
+`Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors`, follow the 302, inspect
+the signed policy, then repeat through the resolver with matching and deliberately
+bogus `If-Range` values. **Observed:** The resolver returns an expiring signed
+`us.aws.cdn.hf.co` URL whose policy binds the expected Range header. Both matching and
+bogus `If-Range` requests returned the same HTTP 206 rather than making the bogus
+validator fall back to a complete response; the resolver `X-Linked-ETag` and final CDN
+`ETag` also differ. Commit, linked-size, and linked-hash headers are exposed for CORS
+but occur on the followed 302; Fetch exposes only the final response, while manual
+redirect mode returns an opaque redirect with no readable headers. Browser CORS fetch
+and Authorization preflight work, but HF's CDN hostname is not stable and no tested
+response supplied CORP. **Expected:** A persisted resume target/validator would remain
+reusable, distinguish changed content, and expose its identity to browser code.
+**Impact on WebAI:** The HF API/download spike must design around these constraints:
+a signed CDN Location is not a durable resume identity; `If-Range` did not provide a
+working validator; and an append path must reject a non-206 or mismatched
+`Content-Range`. Find a separate browser-readable HF metadata path for immutable
+commit, linked size, and hash. Then verify whether an immutable resolver URL plus that
+metadata and re-resolution per range is the right design, and record the choice in a
+decision entry rather than treating this finding as the decision. Do not log signed
+URLs or restrict a future CSP to today's single CDN host. HF access remains CORS-mode
+fetch under D-012's `COEP: require-corp`.
+**Links:** [HF file download guide](https://huggingface.co/docs/huggingface_hub/guides/download),
+[HF download host list](https://huggingface.co/docs/hub/en/models-downloading),
+[Range header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Range),
+[opaque-redirect filtered response](https://fetch.spec.whatwg.org/#concept-filtered-response-opaque-redirect).
+
 ## RE-004: WebLLM and wllama compatibility defaults fetch executable assets externally  (2026-07-17, status: open)
 
 **Environment:** Tagged-source inspection of WebLLM npm 0.2.84 and wllama 3.5.1 on

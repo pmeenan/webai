@@ -23,6 +23,57 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-012: Isolate `/webai/` in place; keep the shared origin  (2026-07-17, status: accepted)
+
+**Decision:** Keep `https://meenan.dev/webai/` and serve WebAI with
+`Cross-Origin-Opener-Policy: same-origin` plus
+`Cross-Origin-Embedder-Policy: require-corp`. Do not use `credentialless` and do not
+split isolated and unisolated WebAI routes: multithreaded wasm and the memory API are
+capabilities of the whole workbench, with individual features still gated on the
+runtime `crossOriginIsolated` probe. The evidence and exact deployment constraints are
+recorded in [hosting-constraints.md](hosting-constraints.md).
+
+Explicitly accept D-010's shared-origin storage choice. `/webai/` is an organizational
+and service-worker-scope boundary, not a storage or security boundary; WebAI uses
+namespaced OPFS/IndexedDB/Cache Storage identifiers and `localStorage` keys plus its
+own byte accounting, while quota, persistence, and same-origin access remain
+origin-wide. A future service worker lives at `/webai/sw.js`, uses scope `/webai/`,
+and is never granted a broader scope.
+
+**Context:** A Chrome 150 browser experiment on 2026-07-17 loaded an isolated page
+under `require-corp`, exposed `SharedArrayBuffer`, and successfully fetched the public
+HF API, a small resolver artifact, and a ranged large LFS/Xet artifact across the
+signed CDN redirect. Repeating the requests with an `Authorization` header also passed
+CORS preflight on public files; the range returned the requested 16-byte HTTP 206
+response. This did not test a valid token or gated artifact. Current HF responses to
+`Origin: https://meenan.dev` expose the final range headers, while immutable commit
+and linked identity headers occur on an intermediate redirect that browser Fetch does
+not expose. The HF API spike must choose a separate browser-readable metadata path.
+The fetch results prove `credentialless` is unnecessary for the allowed HF traffic;
+M1 rechecks the deployed public path rather than treating external headers as a
+timeless guarantee, and M5 tests valid gated access before shipping token support.
+
+The actual target is owner-controlled nginx 1.30.2: `/webai/` maps directly below
+`/var/www/meenan.dev/` and can be rsynced by the deploy user. nginx supports the
+headers, but its current regex locations override an ordinary prefix location, so the
+versioned M1 config must use `location ^~ /webai/` (or deliberately duplicate the
+headers) and needs a one-time interactive admin install/reload. No hosting blocker was
+found. Current web-platform storage specifications confirm that a URL path never
+separates OPFS, IndexedDB, Cache Storage, quota, or persistence.
+
+**Consequences:** Every WebAI document is isolated; cross-origin subresources must use
+CORS or CORP, opener relationships cross a COOP boundary, and offline/cached navigation
+responses must preserve COOP/COEP. D-005 already forbids arbitrary third-party assets,
+so the stricter embedder policy reinforces the network design. M1's live deploy gate
+checks headers, `crossOriginIsolated`, worker `SharedArrayBuffer`, root-path
+non-interference, and HF API/redirect/range/preflight behavior from production.
+
+**Reopen if:** Independently trusted/untrusted content must share `meenan.dev`; root
+service-worker behavior cannot coexist; origin-wide quota/persistence/accounting
+becomes unacceptable; required popup/opener behavior conflicts with COOP; or a
+required resource cannot satisfy `require-corp`. A dedicated domain is the owner's
+accepted fallback if evidence triggers any of these conditions.
+
 ## D-011: Runtime survey scope — replace MediaPipe with LiteRT-LM  (2026-07-17, accepted)
 
 **Decision:** The evidence snapshot and complete comparison are recorded in
