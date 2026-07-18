@@ -10,7 +10,7 @@ unchecked, optionally with a note.
 
 **Status legend:** `pending` · `in progress` · `done` · `parked`
 
-## M0 — Plan the plan  `in progress`
+## M0 — Plan the plan  `done`
 
 Goal: turn the initial feature list into a settled vision, feature matrix,
 architecture, and milestone ladder — through planning conversations with the project
@@ -70,9 +70,14 @@ owner plus targeted research/spikes where a decision needs evidence.
       formatting, GitHub Actions CI with an SPDX allowlist license gate. Versions
       verified against current registries/docs that day; the scaffold-time
       verification list lives in D-016 and lands with the M1 toolchain task.)*
-- [ ] UI/design direction: look-and-feel brief for the "slick chat UI", theming
+- [x] UI/design direction: look-and-feel brief for the "slick chat UI", theming
       (light/dark), design-token approach; decide whether a Design.md (golemine-style
       design system doc) is warranted from M1.
+      *(Done 2026-07-17: [design-brief.md](design-brief.md) and D-017 — "Neon
+      horizon" direction (owner-picked from three mocked-up candidates),
+      dark-default with a real light theme, OKLCH tokens via Tailwind v4 +
+      vendored shadcn/Radix, mascot confirmed; a full Design.md lands with the
+      M1 shell, seeded from the brief.)*
 - [x] Rewrite the provisional ladder below into real milestones with exit criteria
       (D-008; the 2026-07-17 triage (D-010) then resolved the provisional
       *(triage)* markers, and the runtime survey closed its remaining MediaPipe and
@@ -100,12 +105,16 @@ selected the M7 runtime set (D-011).
 ### M1 — Shell, toolchain, live deploy  `pending`
 
 Goal: a deployed, styled app shell with the capability layer and its first consumer.
-Depends on M0: hosting spike, toolchain decisions, UI/design direction.
+Depends on M0: hosting spike (D-012), toolchain decisions (D-016), UI/design
+direction ([design-brief.md](design-brief.md), D-017).
 
 - [ ] Toolchain per the M0 decisions: Astro + islands framework, package manager,
       unit + e2e test stacks, lint/format, CI with license audit.
 - [ ] App shell: navigation, look-and-feel foundation (theming, design tokens),
-      project details/about page.
+      project details/about page — includes writing Design.md from
+      [design-brief.md](design-brief.md) with AA-validated OKLCH token tables for
+      both themes, plus the Arachne-7 asset pipeline and "W" logomark development
+      from the canonical character sheet (D-018; identity already decided).
 - [ ] Capability layer (stable environment probes plus the evidence/invalidation
       framework and storage quota as its first volatile input, per architecture.md)
       and the capability-report page as the first real feature — it exercises the
@@ -115,8 +124,9 @@ Depends on M0: hosting spike, toolchain decisions, UI/design direction.
       from the real origin.
 
 **Exit criteria:** a visitor to the live site sees the styled shell and an accurate
-capability report for their browser; CI runs typecheck/lint/format-check/tests/
-license audit.
+capability report for their browser; both themes are verified against Design.md's
+definition of done (AA contrast, keyboard path, reduced motion, tokens only); CI
+runs typecheck/lint/format-check/tests/license audit.
 
 ### M2 — Manual model acquisition  `pending`
 

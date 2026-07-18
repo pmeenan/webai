@@ -12,8 +12,7 @@ quantization, and library for their needs with real numbers from their own hardw
   you initiate.
 - **Chat and benchmark.** A streaming chat UI with a configurable system prompt, plus
   dataset-driven benchmarking that captures performance and memory results. (The
-  exact feature set beyond that is being triaged — see
-  [docs/features.md](docs/features.md).)
+  full confirmed feature set is in [docs/features.md](docs/features.md).)
 - **Chrome-first, cross-browser-friendly.** Newest Chrome capabilities are used where
   present; other browsers degrade gracefully, and the differences become published
   findings.
@@ -26,8 +25,9 @@ documentation, directed and reviewed by a human.
 
 ## Status
 
-Pre-code: **M0 (plan the plan)** — see [docs/plan.md](docs/plan.md). Application
-scaffolding lands in M1; until then there is nothing to build or run.
+Pre-code: **M0 (plan the plan) is complete**; next up is **M1 (shell, toolchain,
+live deploy)** — see [docs/plan.md](docs/plan.md). Application scaffolding lands
+in M1; until then there is nothing to build or run.
 
 ## Start here
 

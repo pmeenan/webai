@@ -33,9 +33,13 @@ Until then, these govern.
   runtime/backend that a browser lacks is disabled with an explanation, not a broken
   page. Browser differences and failures are findings — log them
   ([docs/rough-edges.md](docs/rough-edges.md)).
-- **Licensing: Apache-2.0.** Dependencies must be MIT/BSD/Apache/ISC/zlib-class
-  permissive. No GPL/AGPL, no copyleft copied into app source. Modified third-party
-  tools we build on (e.g., a wasm build of llama.cpp's gguf-split) keep their upstream
+- **Licensing: Apache-2.0; no viral licenses.** The bar is freedom from copyleft
+  obligations, not a fixed license list: MIT/BSD/Apache/ISC/zlib-class dependencies,
+  plus non-viral asset licenses (e.g., SIL OFL-1.1 for fonts — D-019). No GPL/AGPL
+  or other viral copyleft anywhere; no copyleft copied into app source. CI enforces
+  this as an explicit SPDX allowlist — a new license means extending the allowlist
+  with a decision entry, never bypassing the gate. Modified third-party tools we
+  build on (e.g., a wasm build of llama.cpp's gguf-split) keep their upstream
   permissive licenses recorded in NOTICE. Check the license of every new dependency
   before adding it.
 - **Model files and remote metadata are untrusted input.** Never interpolate Hugging
@@ -73,6 +77,7 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 | [docs/runtime-survey.md](docs/runtime-survey.md) | M0 runtime/backend evidence snapshot, capability comparison, and adapter-design inputs |
 | [docs/hosting-constraints.md](docs/hosting-constraints.md) | Hosting/nginx, cross-origin isolation, HF CORS, base-path, and shared-origin evidence |
 | [docs/hugging-face-api.md](docs/hugging-face-api.md) | HF discovery/file metadata evidence and the D-013 integrity/resume contract for M2/M5 |
+| [docs/design-brief.md](docs/design-brief.md) | Look-and-feel direction ("Neon horizon"), theming/token approach, mascot concept — seeds the M1 Design.md |
 
 ## Rules for all agents
 
@@ -106,7 +111,8 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 
 ## Current status
 
-Milestone **M0 (plan the plan)** — the full feature set, architecture, and milestone
-ladder are being worked out through planning conversations. See
+**M0 (plan the plan) is complete** — vision, feature matrix, architecture draft,
+milestone ladder, toolchain (D-016), and design direction (D-017) are settled. The
+next milestone is **M1 (shell, toolchain, live deploy)**; see
 [docs/plan.md](docs/plan.md). No application code exists yet; scaffolding is M1.
 Keep this paragraph current when plan.md milestone status changes (rule 5).

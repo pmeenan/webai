@@ -23,6 +23,162 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-019: License policy is anti-viral, not a fixed permissive list; OFL-1.1 allowed  (2026-07-17, status: accepted)
+
+**Decision:** The dependency-license policy (D-002) is amended: the bar is **"no
+viral licenses"** — nothing that imposes copyleft/share-alike obligations on the
+app or its distribution — rather than membership in a fixed
+MIT/BSD/Apache/ISC/zlib class. That class remains the expected common case;
+non-viral special-purpose licenses are also acceptable, and **SIL OFL-1.1 joins
+the D-016 CI SPDX allowlist now** (its share-alike reach is confined to the font
+files themselves). Enforcement stays an explicit **allowlist** (per D-002's
+allowlist-not-denylist rationale): a license not on the list fails CI until it is
+deliberately added with a decision entry. OFL compliance is more than a NOTICE
+line: the font assets ship alongside their **upstream copyright notices and the
+full OFL license text** (per the OFL FAQ's redistribution guidance), with NOTICE
+pointing to them.
+
+**Context:** The M0 review found D-017's "font-assets-only exception" in
+conflict with the AGENTS.md licensing constraint and D-002's no-exceptions
+state — M1 could not follow both. The owner resolved it (2026-07-17): OFL is
+fine, add it to the allowed list, and scope the restriction to preventing viral
+licenses like GPL where possible. AGENTS.md's load-bearing constraint was
+rewritten to match in the same change.
+
+**Consequences:** D-017's font delivery-path fork loses its licensing dimension —
+vendored `.woff2` and OFL-licensed font npm packages are both compliant; M1
+picks on engineering merits. The CI license-audit allowlist (D-016) is seeded
+with the permissive class plus OFL-1.1.
+
+**Reopen if:** a needed dependency carries weak/file-level copyleft (MPL-class)
+— that sits between "permissive" and "viral" and gets its own case-by-case
+entry; or the allowlist model itself becomes friction.
+
+## D-018: Mascot identity — Arachne-7, the web-weaving spider automaton  (2026-07-17, status: accepted)
+
+**Decision:** WebAI's mascot is **Arachne-7**: a chrome spider automaton with twin
+neon-blue optics, articulated chrome legs with neon light strips, copper-gear
+joints, and a holographic web spinner that weaves glowing cyan web filaments.
+`docs/assets/arachne-7-character-sheet.jpg` (owner-generated, committed with this
+entry) is the **canonical reference**: every subsequent Arachne-7 artwork is
+generated with the sheet as image context, never from a text prompt alone. The
+sheet's web-styled "W" logomark is the starting point for the WebAI logo work at
+M1. The probe/scanner-drone concept sketched in D-017 is superseded by this
+identity.
+
+**Context:** D-017 confirmed mascot-yes and deferred the concrete identity to an
+M1 decision entry; the owner settled it early by creating the character sheet with
+external generation tools (2026-07-17). The originating prompt, kept for
+provenance and for regenerating/evolving the sheet itself (new *artwork* still
+requires the sheet as image context):
+
+> Generate a character sheet for a mascot that I am going to use for a project
+> called "WebAI". It should be of a futuristic robotic spider weaving a web with
+> a strong blade-runner/tokyo neon vibe. The spider should be chrome and
+> extremely reflective with a bit of a steampunk vibe.
+
+Generation route: Google generative-AI tooling — the JPEG's C2PA manifest is
+signed by Google LLC ("Google C2PA Media Services"; inspected 2026-07-17).
+
+The identity fits better than the drone placeholder: a spider that weaves the
+web is the product name made visual, and the sheet's palette — electric
+blue/cyan glow, indigo night city, magenta/pink neon signage — is native to the
+Neon horizon direction. The copper-gear joints add a warm metallic note that
+exists in artwork only. Where the sheet's generated labels contradict
+themselves, **this written spec governs**: Arachne-7 is 25 cm / 1.2 kg (the
+sheet lists 1.2 kg twice and 1.8 kg once — a generation artifact).
+
+**Consequences:** The brief's palette anchors were re-tuned to the sheet's
+vibrancy in the same change (owner-approved 2026-07-17): darker near-black canvas
+(`#0E111A`-class), accent shifted to the optics' electric blue-cyan
+(`#40C4FF`-class, ~9.5:1), hotter neon data set incl. the signage magenta
+(`#FF2E9E`-class, ~5.3:1) — while text neutrals stay low-chroma (saturated text
+on near-black halates; the sheet's own labels are near-white). Contrast figures
+are WCAG ratios computed against the anchor background; the light theme derives
+its accents separately since the neon anchors collapse on white. D-017's
+direction, accent-rarity, neon-for-data, and AA rules are unchanged — this tunes
+values inside them. Additionally, M1's Design.md imagery section cites the sheet
+as canonical and
+inherits the golemine §12 rules recorded in
+[design-brief.md](design-brief.md): placement limited to landing, major empty
+states, and capability-gate explanations; decorative only; light/dark variants of
+every in-app asset. The sheet is a JPEG (no alpha) and never ships in the app.
+In-app assets **default to opaque per-theme renders on the exact token
+background color**; transparent WebP is used only where a true-alpha workflow
+(real alpha export, or validated edge decontamination) is demonstrated — naive
+color-keying of glowing/reflective artwork fringes or destroys the glow (see
+the brief's asset rules). Warm metallics stay artwork-only — UI chrome remains
+on the Neon horizon tokens. Licensing of the sheet: Google's terms of service
+(policies.google.com/terms, checked 2026-07-17) do not claim ownership of
+generated content and place lawful-use responsibility on the user; the artwork
+was owner-commissioned and supplied, so no NOTICE entry is required — revisit
+if a future generation route's terms differ.
+
+**Reopen if:** the character design proves unreproducible across generation tools
+(sheet-as-context fails to hold the identity), the spider reads as unfriendly in
+user-facing placements (a softer redesign would supersede this entry), or logo
+development at M1 departs from the sheet's "W" mark.
+
+## D-017: Design direction — "Neon horizon", dark-default, Tailwind v4 + vendored shadcn, mascot; full Design.md at M1  (2026-07-17, status: accepted)
+
+**Decision:**
+
+- **A full golemine-style `Design.md`** (binding design-system rulebook) is
+  warranted and lands with the M1 app shell, seeded from
+  [design-brief.md](design-brief.md) — the M0 look-and-feel deliverable.
+- **Visual direction: "Neon horizon"** — Tokyo Night-family editor aesthetics
+  crossed with Blade Runner/Tron instrument panels: indigo-storm dark neutrals,
+  a rare electric-cyan accent, and a violet/magenta neon set **reserved for data
+  visuals** (charts, metrics, mascot/brand imagery), never chrome. Functional
+  status colors stay distinct from both. Subtle glow is permitted on data visuals
+  and brand imagery only — a deliberate, bounded departure from golemine's
+  no-decoration rule; AA contrast and reduced-motion remain non-negotiable.
+- **Dark by default** for first-time visitors, with a persisted Dark/Light/System
+  toggle and a real, AA-compliant light theme. (Differs from golemine's
+  system-default: the identity is editor-native.)
+- **Token approach:** semantic CSS custom properties in OKLCH, mapped into
+  **Tailwind v4** (CSS-first `@theme`) via `@tailwindcss/vite`; **shadcn/ui
+  vendored and restyled** on our tokens with Radix interaction primitives and
+  lucide icons; domain surfaces (chat stream, virtualized lists, charts)
+  hand-rolled. Inter + JetBrains Mono, self-hosted (D-005), under SIL OFL-1.1 —
+  allowed by the anti-viral license policy (D-019, which also added OFL-1.1 to
+  the CI allowlist). Delivery path (vendored `.woff2` vs. font npm packages) is
+  an M1 engineering call; either way the assets ship with their upstream
+  copyright notices and OFL text, with NOTICE pointing to them (D-019).
+- **Mascot: yes** — concept: a holographic probe/scanner drone in the neon set;
+  character-sheet-first pipeline and placement rules per the brief. Concrete
+  identity gets its own M1 decision entry. *(Identity settled same day: the
+  drone concept is superseded by Arachne-7 — see D-018.)*
+
+**Context:** Closes the last open M0 checklist item. Owner direction (2026-07-17
+conversation): a full brief but not golemine's gold/steampunk theming — a vibrant,
+professional developer look styled off popular VS Code theme packs with neon
+futuristic contrast; Tailwind + vendored shadcn/Radix confirmed; mascot confirmed.
+Three directions were mocked up and put to the owner: **Phosphor**
+(Matrix/terminal phosphor-green — rejected: accent collides with success-green
+status semantics in a diagnostics-first tool, reads retro), **Neon horizon**
+(chosen), and **Aurora** (Catppuccin/Dracula pastels — rejected: softer than the
+futuristic-instrument brief). Dark-default was an explicit owner call.
+Technology-state checks (root rule 4, 2026-07-17): Tailwind is at v4.3 with
+`@tailwindcss/vite` as the blessed Astro path and `@astrojs/tailwind` archived
+June 2026 (tailwindcss.com, docs.astro.build); shadcn/ui is fully updated for
+Tailwind v4 + React 19 with OKLCH colors (ui.shadcn.com); VS Code theme
+popularity (GitHub Themes 18.8M, One Dark Pro 12.2M, Dracula 5M+, Tokyo Night
+2.7M+, Catppuccin trending) from 2026 marketplace roundups.
+
+**Consequences:** M1's "look-and-feel foundation" task consumes the brief:
+derive final OKLCH token tables (both themes, AA-validated), write `Design.md`
+per the brief's required-contents list, add NOTICE entries when vendoring
+(Tailwind/shadcn/Radix MIT, lucide ISC, fonts OFL-1.1 per D-019), and record the
+mascot identity decision *(fulfilled early by D-018, same day)*. With this, every
+M0 checklist item is closed.
+
+**Reopen if:** scaffold-time smoke checks find Tailwind v4/`@tailwindcss/vite`
+or vendored shadcn incompatible with the Astro 7 island setup (fallback ladder to
+be recorded in a superseding entry); the cyan accent or neon set cannot reach AA
+in a theme without losing the identity; or the mascot/glow direction proves
+unworkable in generated assets at M1.
+
 ## D-016: Toolchain — Astro 7, React 19, pnpm, TS 6, Vitest+Playwright, ESLint+Biome  (2026-07-17, status: accepted)
 
 **Decision:** The M1 scaffold uses:
@@ -621,7 +777,7 @@ Decision log and findings log are load-bearing project outputs.
 
 **Reopen if:** The owner changes the collaboration model.
 
-## D-002: Apache-2.0 license; permissive dependencies only  (2026-07-17, accepted)
+## D-002: Apache-2.0 license; permissive dependencies only  (2026-07-17, accepted; amended by D-019 — the policy bar is "no viral licenses", and OFL-1.1 font assets are allowed)
 
 **Decision:** The project is Apache-2.0. Dependencies and vendored/modified
 third-party code must be permissive (MIT/BSD/Apache/ISC/zlib-class), recorded in
