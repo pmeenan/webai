@@ -61,9 +61,15 @@ owner plus targeted research/spikes where a decision needs evidence.
       *(Done 2026-07-17: D-014 selects one model control plane over hybrid physical
       storage and fixes the supervised adapter/worker boundary; D-015 defines
       evidence-labelled benchmark semantics. These close features questions 3/4.)*
-- [ ] Toolchain decisions: Astro version + islands framework (React? Svelte? none?),
+- [x] Toolchain decisions: Astro version + islands framework (React? Svelte? none?),
       package manager, test stack (unit + e2e), lint/format, CI, license audit.
       Record in decisions.md.
+      *(Done 2026-07-17: D-016 — Astro 7 + React 19 islands, pnpm 11, TS 6.0.x
+      (TS 7 blocked by typescript-eslint/@astrojs/check peer ranges; move when they
+      support it), Vitest 4 browser mode + Playwright, ESLint 10 lint with Biome
+      formatting, GitHub Actions CI with an SPDX allowlist license gate. Versions
+      verified against current registries/docs that day; the scaffold-time
+      verification list lives in D-016 and lands with the M1 toolchain task.)*
 - [ ] UI/design direction: look-and-feel brief for the "slick chat UI", theming
       (light/dark), design-token approach; decide whether a Design.md (golemine-style
       design system doc) is warranted from M1.
@@ -109,7 +115,8 @@ Depends on M0: hosting spike, toolchain decisions, UI/design direction.
       from the real origin.
 
 **Exit criteria:** a visitor to the live site sees the styled shell and an accurate
-capability report for their browser; CI runs typecheck/lint/tests/license audit.
+capability report for their browser; CI runs typecheck/lint/format-check/tests/
+license audit.
 
 ### M2 — Manual model acquisition  `pending`
 

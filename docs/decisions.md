@@ -23,6 +23,88 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-016: Toolchain — Astro 7, React 19, pnpm, TS 6, Vitest+Playwright, ESLint+Biome  (2026-07-17, status: accepted)
+
+**Decision:** The M1 scaffold uses:
+
+- **Astro 7** (current stable line, static output, base `/webai/`), on **Node 24**
+  (Astro 7 requires 22+).
+- **React 19** via the official `@astrojs/react` integration for the interactive
+  islands (chat, benchmark dashboards, model manager). Cross-island shared state via
+  a small store library (nanostores is the Astro-docs-blessed default; final pick at
+  M1).
+- **pnpm 11**, pinned via the `packageManager` field. (pnpm 12 is a Rust-port alpha —
+  not yet.)
+- **TypeScript 6.0.x** (the bridge line to the native compiler; 6.0.3 stable since
+  2026-04-16). The owner's first choice was TS 7 gated on a compatibility check; the
+  check was run during M0 review (registry peer ranges, 2026-07-17) and failed:
+  typescript-eslint@8.64.0 requires `typescript <6.1.0` and @astrojs/check@0.9.9
+  requires `^5 || ^6` — TS 7 satisfies neither. 6.0.x is the newest stable line
+  inside both ranges; TS 7 waits on the lint/check stack (see Reopen if).
+- **Unit tests: Vitest 4**, with **browser mode** (stable since 4.0, Playwright
+  provider, real Chromium) as the vehicle for worker/OPFS/isolation-dependent code —
+  jsdom/happy-dom implement none of workers, OPFS, or WebGPU. Known caveats to design
+  around: Vitest opens one Playwright `BrowserContext` per test file (storage is
+  isolated *across* files) but a single page per file, so OPFS-mutating tests collide
+  *within* a file — use per-test namespaces or cleanup in each file (Vitest browser
+  docs checked 2026-07-17); response-header (COOP/COEP) support for
+  `crossOriginIsolated` tests landed June 2026 — verify the exact config knob at
+  scaffold time.
+- **E2E: Playwright** (Apache-2.0), Chromium project in CI. WebGPU in headless
+  Chromium needs launch flags, and GitHub-hosted runners have no GPU (SwiftShader
+  fallback at best): CI e2e asserts functionality only, never performance numbers.
+- **Lint: ESLint 10** (flat config; v9 EOL 2026-08-06) + typescript-eslint +
+  eslint-plugin-astro. **Format: Biome 2.x** (MIT OR Apache-2.0), preferred over
+  Prettier for speed and single-tool simplicity. Biome's full `.astro` template
+  support is still experimental, so the scaffold-time fallback ladder is: if Biome
+  mishandles `.astro` files, scope Biome to `.ts`/`.tsx` and format `.astro` with
+  prettier-plugin-astro — stale (last release 2024-07-16) but published,
+  non-deprecated, and still Astro's documented recommendation for CLI formatting
+  (docs checked 2026-07-17); verify it against current Prettier before relying on
+  it. Only if that also fails does `.astro` formatting go unenforced.
+- **CI: GitHub Actions** on pull requests, golemine-shaped pipeline: lint →
+  format-check → typecheck → unit → Playwright Chromium e2e → license audit; current
+  action majors (`actions/checkout@v7`, `actions/setup-node@v7` with pnpm cache,
+  `pnpm/action-setup@v6`).
+- **License audit: SPDX-aware allowlist gate** (MIT, Apache-2.0, BSD-2/3, ISC, 0BSD,
+  Zlib, …) that fails CI on anything else — `license-checker-evergreen` (maintained
+  fork; SPDX-expression-aware `--onlyAllow`) or a small audit script as in golemine.
+  Allowlist, not denylist, per D-002.
+
+**Context:** Versions, licenses, and maintenance health were verified against
+registry.npmjs.org, astro.build, vitest.dev, biomejs.dev, playwright.dev, and the
+GitHub API on 2026-07-17 (root rule 4): Astro shipped two majors in 2026 (v6 March,
+v7 June — Vite 8/Rolldown, Rust compiler with stricter HTML parsing), Vitest 4's
+browser mode left experimental status, ESLint 10 made flat config mandatory, TS 7.0
+(Go-based) became `latest`, and all four candidate island frameworks published
+Astro-7-compatible integration majors in July 2026. Owner precedent was read from
+pmeenan/golemine (React 19, ESLint 9, Playwright, custom license-audit CI gate,
+pnpm/Vitest) and pmeenan/parallax (Biome, TS 7, pnpm/Vitest) the same day. The three
+preference-level calls — React over Preact/Svelte/Solid, ESLint-lint + Biome-format
+over either project's exact stack, TS 7 over conservative 5.x — were put to the owner
+and confirmed in the M0 toolchain conversation (2026-07-17). The owner's TS 7 pick
+carried a verify-first gate; running it during the same-day M0 review surfaced the
+typescript-eslint/@astrojs/check peer conflicts above, so the recorded version is
+6.0.x with TS 7 as a standing preference. React's ~55–65 KB versus
+Preact's ~5 KB was judged irrelevant for a tool whose users download multi-GB models;
+ecosystem depth for a polished chat UI (virtualized lists, Radix-class primitives)
+and golemine familiarity dominated.
+
+**Consequences:** M1 scaffolding is unblocked. Astro 7 + Vite 8 is a new-enough
+stack that scaffold-time smoke checks are mandatory, not optional: base path
+`/webai/` behavior, Biome-on-`.astro` formatting (with the prettier-plugin-astro
+fallback ladder above), and the Vitest browser-mode header knob. Failures
+there get logged to rough-edges.md and, where they force a substitution, a
+superseding decision entry. The plan.md M1 toolchain task inherits this list.
+
+**Reopen if:** typescript-eslint and @astrojs/check ship TS 7 support — move to TS 7
+then, per the owner's standing preference; a scaffold-time gate fails (the Biome
+`.astro` fallback ladder ends unenforced); Astro
+7's Rust compiler or Rolldown proves unstable for the island-heavy app shape; React
+islands fight the worker-centric architecture in a way a lighter framework would
+not; or ESLint 10 + Biome duplication becomes friction that a matured
+Biome-with-full-`.astro`-support (or stable type-aware Oxlint) would resolve better.
+
 ## D-015: Benchmark metrics carry source, scope, and support state  (2026-07-17, status: accepted)
 
 **Decision:** Store raw per-iteration observations and make every benchmark metric an
