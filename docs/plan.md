@@ -46,12 +46,15 @@ owner plus targeted research/spikes where a decision needs evidence.
       *(Done 2026-07-17: D-012 keeps the shared path and selects COOP `same-origin` +
       COEP `require-corp`; the live-host inspection and Chrome HF API/resolver/range
       experiment are recorded in [hosting-constraints.md](hosting-constraints.md).)*
-- [ ] Hugging Face API spike: search/filter capabilities of the public REST API from
+- [x] Hugging Face API spike: search/filter capabilities of the public REST API from
       a browser client (rate limits, CORS, what "browser-suitable" filters are
       actually expressible), LFS metadata for integrity/resume.
       *(Consumes RE-005: expiring, range-bound Xet URLs and a separate
       browser-readable metadata path for commit/linked size/hash; and RE-006:
-      rate-limit headers are not CORS-exposed, so backoff must be reactive.)*
+      rate-limit headers are not CORS-exposed, so backoff must be reactive. Done
+      2026-07-17: [hugging-face-api.md](hugging-face-api.md) and D-013 select
+      commit-pinned metadata, fresh per-range resolution, strict range validation,
+      final LFS SHA-256 verification, and two-stage suitability filtering.)*
 - [ ] First full draft of [architecture.md](architecture.md): runtime adapter
       abstraction, worker topology, storage layout, download manager, capability
       gating, benchmark harness design.
@@ -112,9 +115,12 @@ Depends on M0: HF API spike.
 
 - [ ] Model ID / URL entry → repo file and quant listing via the HF API.
 - [ ] Download manager in a worker: streaming progress; resumable +
-      integrity-checked. Resume design must anticipate the M3 streaming-split
-      stage — a resumed download may target split output, not a single file
-      (D-009).
+      integrity-checked per D-013 and the
+      [HF API spike](hugging-face-api.md): commit-pinned identity, fresh resolver
+      request per range, exact `Content-Range`, restart-safe partial state, and
+      worker verification before promotion. Resume design must anticipate the M3
+      streaming-split stage — a resumed download may target split output, not a
+      single file (D-009).
 - [ ] OPFS model store with manifest (source, revision, size, hashes, format
       metadata) + management UI: list, inspect, delete, storage usage and quota
       (incl. `persist()` and eviction awareness).
@@ -125,7 +131,10 @@ Depends on M0: HF API spike.
 
 **Exit criteria:** a user can enter a repo ID (e.g., an unsloth GGUF repo), pick a
 quant, download it with progress, see it in the model manager, and inspect its
-metadata; malformed/hostile files fail with a report, never a crash.
+metadata. A measured interruption survives a page/worker restart and resumes without
+re-fetching the durable prefix; wrong range/size and final-integrity fixtures fail
+closed and no unverified artifact is promoted. Malformed/hostile files fail with a
+report, never a crash.
 
 ### M3 — First chat: wllama, with streaming split  `pending`
 
@@ -171,8 +180,9 @@ option is visibly gated with an explanation.
 
 Goal: discovery without leaving the app.
 
-- [ ] HF search/browse with in-browser-suitability filters (size, format, quant,
-      task).
+- [ ] HF search/browse with D-013's two-stage in-browser-suitability filters (size,
+      format, quant, task): server-filter candidate pages, then bounded/cached
+      revision-pinned file enrichment with explicit pending/unknown states.
 - [ ] Basic suitability hints (file size vs. quota/memory); full capability-based
       filtering stays in M10.
 - [ ] Model license + gating status surfaced pre-download; HF token for gated models
@@ -180,7 +190,9 @@ Goal: discovery without leaving the app.
       and its signed redirect in a browser; D-012 proved Authorization preflight only.
 
 **Exit criteria:** a user finds, evaluates, and downloads a suitable model entirely
-in-app; the manual-entry path from M2 remains as the escape hatch.
+in-app; pagination/enrichment can find a size/quant match beyond the first candidate
+page without presenting unknown candidates as incompatible; the manual-entry path
+from M2 remains as the escape hatch.
 
 ### M6 — Chat testing depth  `pending`
 

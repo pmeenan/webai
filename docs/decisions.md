@@ -23,6 +23,68 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-013: Pin downloads to repo commits and LFS identity  (2026-07-17, status: accepted)
+
+**Decision:** Use a two-stage Hugging Face discovery/acquisition flow and an immutable
+download identity. Public model search supplies a bounded candidate set using the
+server's model-ID substring, task, tag/library, gating, parameter-count, and sort
+filters. WebAI enriches bounded candidate batches or selected repos with
+revision-pinned file metadata; actual file bytes, shard totals, quant choices, and
+local-runtime suitability are client-side filters because the public search API
+cannot express them reliably.
+
+Before offering a download, resolve the requested branch/tag to a commit and persist
+`(repo ID, commit SHA, path, byte size, integrity kind + digest)` for every selected
+file. Weight artifacts/shards require an LFS payload SHA-256. A selected non-LFS
+companion instead records and verifies its Git-blob SHA-1 semantics; that identifier
+must never be passed to plain file hashing or labeled SHA-256. Every initial or
+resumed transfer requests `Range: bytes=N-` through a fresh immutable resolver URL,
+including `N=0`; signed CDN URLs are transient and never persisted. A response is
+appendable only when it is HTTP 206, its parsed `Content-Range` has the exact durable
+start and expected total plus a valid end, and the body contains exactly the declared
+interval without overrun. Completion requires worker verification against the
+declared integrity kind before atomic promotion from partial to installed. `If-Range`
+is not a validator in this design. M2 uses the LFS-compatible `/resolve/` byte path,
+not native Xet CAS reconstruction; native Xet is reconsidered only as a measured
+performance project.
+
+Discovery follows exposed opaque `Link` cursors, debounces/coalesces requests, and
+caches enrichment by repo SHA. On 429, browser code uses bounded exponential backoff
+with jitter and visible retry/cancel state; it does not hard-code quotas or promise a
+remaining-request counter because current HF rate-limit headers are not CORS-exposed.
+Full evidence, API expressiveness, the resume protocol, and implementation gates are
+recorded in [hugging-face-api.md](hugging-face-api.md).
+
+**Context:** Official `huggingface_hub` documentation and direct HF API measurements
+were checked 2026-07-17. Model search returned repo SHAs and exposed cursor pagination
+but no per-file byte/hash metadata. Revision-pinned model-info and tree responses
+returned exact file sizes plus LFS SHA-256 identities for GGUF/safetensors artifacts.
+The hosting spike already proved API/resolver/range CORS from an isolated Chrome page.
+RE-005 showed that resolver-issued Xet URLs expire, bind the requested Range, hide
+intermediate identity headers from Fetch, and did not honor `If-Range` as a useful
+resume validator. RE-006 showed that documented rate/reset headers are hidden by the
+CORS response filter. Resolving a fresh range at the stored commit and checking both
+metadata and final content closes those gaps without relying on CDN details.
+
+**Consequences:** M2's manifest carries immutable source identity and partial-stage
+state; a mutable branch name is provenance only. For ordinary file output, resume may
+re-read durable partial bytes to reconstruct hash state and must reconcile actual
+output length before fetching. M3's streaming splitter must checkpoint source offset,
+durable split state, and resumable hash state together or use D-009's fallback.
+Sharded models retain an integrity identity and size per shard. Weight artifacts
+without an LFS SHA-256 fail closed; selected Git-managed companions use Git-blob
+verification. A final Xet bridge `ETag` is not mistaken for the payload SHA-256. M5's
+size and quant filters progressively enrich
+candidates and explicitly represent “not inspected” rather than treating unknown as
+incompatible. All remote metadata remains bounded, validated untrusted input under
+D-006.
+
+**Reopen if:** Hugging Face exposes a documented, durable browser download session
+with equivalent commit/content binding; the file metadata ceases to expose a usable
+content hash; immutable resolver URLs stop supporting range requests; or measured API
+limits make visible-page enrichment impractical. Reopen the affected mechanism, not
+the resumable/integrity requirement, unless the product scope changes explicitly.
+
 ## D-012: Isolate `/webai/` in place; keep the shared origin  (2026-07-17, status: accepted)
 
 **Decision:** Keep `https://meenan.dev/webai/` and serve WebAI with

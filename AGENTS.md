@@ -72,6 +72,7 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 | [docs/rough-edges.md](docs/rough-edges.md) | Platform/library findings log (RE-NNN). Grep before adding a finding or debugging browser weirdness |
 | [docs/runtime-survey.md](docs/runtime-survey.md) | M0 runtime/backend evidence snapshot, capability comparison, and adapter-design inputs |
 | [docs/hosting-constraints.md](docs/hosting-constraints.md) | Hosting/nginx, cross-origin isolation, HF CORS, base-path, and shared-origin evidence |
+| [docs/hugging-face-api.md](docs/hugging-face-api.md) | HF discovery/file metadata evidence and the D-013 integrity/resume contract for M2/M5 |
 
 ## Rules for all agents
 

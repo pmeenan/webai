@@ -25,6 +25,64 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-009: Hugging Face's OpenAPI schema omits core model discovery routes  (2026-07-17, status: open)
+
+**Environment:** Live Hugging Face schema and API plus official `huggingface_hub`
+client documentation/source, checked 2026-07-17; no browser required. **Repro or
+measurement:** List `.paths` from the
+[published schema](https://huggingface.co/.well-known/openapi.json)
+and search for `GET /api/models` plus model-info
+`GET /api/models/{namespace}/{repo}`; compare with successful live calls and the
+official `list_models`/`model_info` wrappers. **Observed:** The published schema
+contains many repo operations, including tree and paths-info, but omits both core GET
+routes even though they are live and wrapped by the official client. **Expected:** A
+generated client from the advertised Hub API schema would cover the read endpoints
+needed for model discovery. **Impact on WebAI:** Do not select or generate an OpenAPI
+client as the sole HF integration. Implement the measured read calls behind local
+types/validators and recheck their official client mapping at M2/M5. **Links:**
+[HF API spike](hugging-face-api.md),
+[Hub API endpoints](https://huggingface.co/docs/hub/main/api),
+[`huggingface_hub` API reference](https://huggingface.co/docs/huggingface_hub/en/package_reference/hf_api).
+
+## RE-008: Public missing-repo lookup reports a misleading authentication error  (2026-07-17, status: open)
+
+**Environment:** curl 8.5.0 on Linux against the public HF model API with
+`Origin: https://meenan.dev`, checked 2026-07-17. **Repro or measurement:** GET model
+detail for
+`webai-spike-definitely-not-a-real-user/webai-spike-definitely-not-a-real-repo`
+without an Authorization header. Then GET
+`Qwen/Qwen2.5-0.5B-Instruct/revision/webai-spike-invalid-revision` the same way.
+**Observed:** The missing repo returned HTTP 401; both its JSON `error` and
+`X-Error-Message` were `Invalid username or password.`. The invalid revision returned
+HTTP 404 with JSON `error` `Invalid rev id: webai-spike-invalid-revision` and the
+distinct `X-Error-Code: RevisionNotFound` header. The CORS response allow-listed that
+header for browser access. **Expected:** A missing public resource would be
+distinguishable from bad credentials. **Impact on WebAI:** A 401/404 model lookup must
+say “not found, private/gated, or unauthorized” until an authenticated request or
+other evidence narrows the cause; never tell an anonymous user that a password is
+wrong. M2/M5 fixtures assert status, JSON error, and exposed error headers separately
+rather than conflating their values.
+**Links:** [HF API spike](hugging-face-api.md),
+[`model_info` error contract](https://huggingface.co/docs/huggingface_hub/en/package_reference/hf_api#huggingface_hub.HfApi.model_info).
+
+## RE-007: Hugging Face GGUF aggregate size is unsafe for per-quant suitability  (2026-07-17, status: open)
+
+**Environment:** Live public model search/info/tree API with curl 8.5.0 on Linux,
+checked 2026-07-17. **Repro or measurement:** Compare expanded
+`gguf.totalFileSize`, repo `usedStorage`, and the sum of revision-pinned GGUF tree
+entries from
+`GET /api/models/Qwen/Qwen3-4B-GGUF?blobs=true` at returned commit
+`bc640142c66e1fdd12af0bd68f40445458f3869b`. The expanded value was 2,497,280,256
+bytes—exactly the Q4_K_M file—while five GGUF files and `usedStorage` totaled
+15,797,169,824 bytes.
+**Observed:** The aggregate has no associated filename/variant and cannot drive a
+quota or download choice. **Expected:** A size exposed in search metadata would have
+documented scope or identify the files it covers. **Impact on WebAI:** D-013 uses it
+only as an untrusted discovery hint. Actual size/quant filtering totals the explicit
+revision-pinned file/shard set; UI never labels `gguf.totalFileSize` as download size.
+**Links:** [HF API spike](hugging-face-api.md),
+[`list_models` expansion reference](https://huggingface.co/docs/huggingface_hub/en/package_reference/hf_api#huggingface_hub.HfApi.list_models).
+
 ## RE-006: Hugging Face rate-limit headers are not CORS-exposed  (2026-07-17, status: open)
 
 **Environment:** Google Chrome 150.0.7871.128 on Linux 6.17.0-40, isolated localhost
@@ -39,8 +97,10 @@ artifact-identity headers are exposed. **Expected:** A browser API client could 
 the service's documented quota state and wait until reset before receiving a 429.
 **Impact on WebAI:** The M0 HF API spike must design reactive 429/backoff behavior
 without assuming the quota headers are readable; the UI cannot promise a proactive
-remaining-request count. Recheck before implementation because this is an external
-response policy. **Links:** [HF rate-limit documentation](https://huggingface.co/docs/hub/main/rate-limits),
+remaining-request count. D-013 now selects debouncing/coalescing, SHA-keyed caching,
+and bounded reactive backoff with visible retry/cancel state. Recheck before
+implementation because this is an external response policy. **Links:** [HF API spike](hugging-face-api.md),
+[HF rate-limit documentation](https://huggingface.co/docs/hub/main/rate-limits),
 [Access-Control-Expose-Headers](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Expose-Headers).
 
 ## RE-005: Hugging Face Xet resume URLs are expiring and range-bound  (2026-07-17, status: open)
@@ -50,7 +110,11 @@ public HF resolver/Xet CDN, checked 2026-07-17. **Repro or measurement:** Reques
 `Range: bytes=0-0` for
 `Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors`, follow the 302, inspect
 the signed policy, then repeat through the resolver with matching and deliberately
-bogus `If-Range` values. **Observed:** The resolver returns an expiring signed
+bogus `If-Range` values. For the complete/past-end measurement, use the immutable URL
+`https://huggingface.co/hf-internal-testing/tiny-random-gpt2/resolve/71034c5d8bde858ff824298bdedc65515b97d2b9/model.safetensors`:
+download it with `curl -L --range 0- -D headers -o model URL`, run `sha256sum model`,
+then run `curl -L --range 453864-453864 -D headers-416 -o body URL` and inspect the
+final headers/body length. **Observed:** The resolver returns an expiring signed
 `us.aws.cdn.hf.co` URL whose policy binds the expected Range header. Both matching and
 bogus `If-Range` requests returned the same HTTP 206 rather than making the bogus
 validator fall back to a complete response; the resolver `X-Linked-ETag` and final CDN
@@ -67,9 +131,22 @@ working validator; and an append path must reject a non-206 or mismatched
 commit, linked size, and hash. Then verify whether an immutable resolver URL plus that
 metadata and re-resolution per range is the right design, and record the choice in a
 decision entry rather than treating this finding as the decision. Do not log signed
-URLs or restrict a future CSP to today's single CDN host. HF access remains CORS-mode
-fetch under D-012's `COEP: require-corp`.
-**Links:** [HF file download guide](https://huggingface.co/docs/huggingface_hub/guides/download),
+URLs or restrict a future CSP to today's single CDN host. D-013 selects the separate
+revision-pinned model/tree metadata path, a fresh immutable resolver request per
+range, strict `Content-Range` validation, and full LFS SHA-256 verification. A complete
+download of
+`hf-internal-testing/tiny-random-gpt2/resolve/71034c5d8bde858ff824298bdedc65515b97d2b9/model.safetensors`
+was 453,864 bytes and hashed to the tree's LFS SHA-256
+`8111d5afb0715dbf5a31396d31432cb56370ba23f6650a035ea0fc8a20b4e500`;
+the final CDN `ETag` was the different Xet ID
+`f8accece953fd366d4ce30597b97acc1ccedc3c785187a5ef6ecb4a8e1755122`.
+The open-ended initial range returned HTTP 206 with
+`Content-Range: bytes 0-453863/453864` and the exact 453,864-byte body.
+Requesting `Range: bytes=453864-453864` at that pinned URL returned 416, a zero-byte
+body, and no unsatisfied `Content-Range`. HF access remains CORS-mode fetch under
+D-012's `COEP: require-corp`.
+**Links:** [HF API spike](hugging-face-api.md),
+[HF file download guide](https://huggingface.co/docs/huggingface_hub/guides/download),
 [HF download host list](https://huggingface.co/docs/hub/en/models-downloading),
 [Range header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Range),
 [opaque-redirect filtered response](https://fetch.spec.whatwg.org/#concept-filtered-response-opaque-redirect).

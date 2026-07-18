@@ -1,8 +1,8 @@
 # Architecture
 
 **Status: skeleton.** The first full draft is an M0 exit criterion
-([plan.md](plan.md)); the completed M0 runtime survey and hosting spike plus the
-pending HF-API spike feed it. What is written here now is the load-bearing shape that
+([plan.md](plan.md)); the completed M0 runtime survey, hosting spike, and HF API spike
+feed it. What is written here now is the load-bearing shape that
 planning conversations and the [runtime survey](runtime-survey.md) have already
 settled, so drafting can build on it rather than re-derive it.
 
@@ -53,13 +53,25 @@ the replacement Google packaged-model candidate (D-011).
 - **Model store.** Likely a single OPFS-backed store with its own manifest (source,
   revision, hashes, size, format metadata) — single store vs. per-runtime native
   caches is features.md open question 3 — plus a download manager (streaming progress,
-  Range-resume, and integrity checking — confirmed, D-010). The wasm
+  Range-resume, and integrity checking — confirmed, D-010). HF acquisition resolves
+  mutable refs to commits and persists per-file size plus a discriminated integrity
+  identity: weight artifacts require LFS SHA-256, while selected Git-managed
+  companions use Git-blob identity. Every initial or resumed request resolves a fresh
+  range at that commit, validates the exact `Content-Range`, and promotes only after
+  verification using the recorded algorithm (D-013;
+  [spike evidence](hugging-face-api.md)). The wasm
   gguf-split tool runs as a stage of the download pipeline, splitting monolithic
   GGUFs as bytes arrive (D-009 — streaming is the preferred path, gated on the M3
   feasibility experiment; upstream's splitter is seek-based, so this is an I/O
   redesign, and split-after-download is the recorded fallback). The same splitter
   also runs on demand against already-stored files (user imports, pre-split
   downloads). Splitter and download manager share one worker pipeline.
+- **Model discovery.** Two-stage HF discovery: bounded server-side candidate search
+  using model-ID substring/task/tag metadata, then cached revision-pinned enrichment
+  of candidate batches or selected repos. File byte size, shard grouping, quant
+  choices, and “runs here” are client-derived because the public search surface cannot
+  express them reliably. Cursor pagination, 429 backoff, and
+  unknown/not-yet-enriched states are explicit (D-013, RE-006).
 - **Benchmark harness.** Drives the same runtime adapters as chat; owns dataset
   loading (BYO JSON schema + one bundled permissively-licensed default set — D-010),
   iteration/statistics, metric capture, and result persistence/export.

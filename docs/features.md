@@ -17,12 +17,12 @@ Status legend: `confirmed · proposed · parked (D-NNN) · rejected (D-NNN)`
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Hugging Face model search/browse with in-browser-suitability filters (size, format, quant, task) | confirmed | Uses the public HF REST API from the client |
-| Direct model download from Hugging Face into local storage | confirmed | |
+| Hugging Face model search/browse with in-browser-suitability filters (size, format, quant, task) | confirmed | Two-stage browser flow: server-filter candidates by task/tags, then cache revision-pinned file enrichment for client-side size/quant/runtime suitability (D-013) |
+| Direct model download from Hugging Face into local storage | confirmed | Immutable commit + per-file integrity identity (LFS SHA-256 required for weights; Git-blob identity for selected non-LFS companions); fresh resolver request for every range (D-013) |
 | Local model management in OPFS (list, inspect, delete, storage usage) | confirmed | |
 | User-provided model import (file picker / drag-drop, incl. multi-file sharded models) | confirmed | |
 | GGUF splitting via a wasm build of llama.cpp's gguf-split | confirmed | Modified tooling, upstream MIT; runs as a streaming stage of the download pipeline (D-009) |
-| Resumable, integrity-checked downloads (HTTP Range + hash from HF LFS metadata, survive tab close) | confirmed | M2 for app-managed files; M7 adapters with native caches must integrate the shared path or demonstrate equivalent behavior. Multi-GB files over flaky connections; re-downloading from zero is brutal (D-010, D-011) |
+| Resumable, integrity-checked downloads (HTTP Range + hash from HF LFS metadata, survive tab close) | confirmed | M2 protocol fixed by D-013: commit-pinned identity, fresh per-range resolution, strict `Content-Range`, full LFS SHA-256 before promotion. M7 native caches must integrate the shared path or demonstrate equivalent behavior (D-010, D-011) |
 | HF token support for gated models (Llama, Gemma; token stored locally only) | confirmed | M5. Many of the most-tested model families are gated (D-010) |
 | Surface model license + gating status before download | confirmed | M5. Low cost, keeps users out of accidental license trouble (D-010) |
 | Model file metadata inspector (GGUF/ONNX header: arch, context length, quant per-tensor, chat template) | confirmed | GGUF side lands M2 — doubles as the download-verification surface before inference exists; ONNX side lands M7 with the format's first runtime (D-010) |
