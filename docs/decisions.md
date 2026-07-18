@@ -23,6 +23,102 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-015: Benchmark metrics carry source, scope, and support state  (2026-07-17, status: accepted)
+
+**Decision:** Store raw per-iteration observations and make every benchmark metric an
+evidence-labelled record: value/unit when available, phase, scope, source, collection
+context, support state (`measured`, `estimated`, or `unavailable`), and caveats.
+Missing values are never zero. Comparisons warn when their sources, scopes, effective
+backends, token-count methods, concurrency, or cold/warm setup differ.
+
+Standard timing uses monotonic timestamps and distinguishes first observable token
+from first text chunk. Prefill/decode rates exist only when the adapter supplies a
+reliable phase boundary and token count; post-hoc tokenizer counts are estimates.
+`measureUserAgentSpecificMemory`, when available, is an app-attributed point-in-time
+estimate; cadence-based runs report the maximum observed sample, not “peak memory.”
+Wasm heap is its own scope. GPU memory and Prompt API model/process memory remain
+unavailable unless an adapter/browser exposes a measurement with defined semantics.
+Storage bytes and origin quota are never presented as runtime memory. Successful
+iterations initially aggregate with median, nearest-rank p95, sample variance
+(`n - 1`), and sample standard deviation. Variance/standard deviation are unavailable
+below two successful samples; failures and raw attempts remain beside the summary.
+
+“Cold” means a fresh adapter/session over already-local artifacts; “warm” means a
+declared reused session/cache state. Clearing durable browser caches is separate,
+explicit destructive preparation. Default comparison runs are sequential; concurrent
+throughput is a separately labelled workload.
+
+**Context:** Feature triage left benchmark honesty for the architecture draft because
+browser runtimes expose materially different evidence. The WICG memory-measurement
+spec and Chrome behavior were checked 2026-07-17 for D-010: the API estimates memory
+at a point in time and may attribute workers/iframes, but does not expose a universal
+GPU allocation or true peak. The runtime survey likewise found different token,
+backend, and browser-managed surfaces. Converting unavailable dimensions into model-
+size estimates would make precise-looking but non-comparable results.
+
+**Consequences:** The M3 live metrics event shape is a subset of M8's observation
+schema. Adapters report requested and effective configuration plus native metric
+semantics. Exports retain environment, versions, run preparation, raw observations,
+support states, and failures, allowing aggregates to be audited. UI comparisons may
+show partial metric sets; honesty takes precedence over a full rectangular table.
+Features question 4 is answered.
+
+**Reopen if:** A standardized browser API provides attributable process/GPU/energy
+measurements with stable semantics, runtime APIs converge on stronger common token
+boundaries, or experiments show the initial aggregate method obscures the distributions
+WebAI needs to report. New metrics extend the schema; they do not weaken provenance.
+
+## D-014: One model control plane over hybrid physical storage  (2026-07-17, status: accepted)
+
+**Decision:** Use one WebAI model manifest and management surface, backed by a hybrid
+physical layout. App-managed source bytes, imports, and derived artifacts live under
+versioned WebAI OPFS paths; IndexedDB holds manifests, acquisition checkpoints,
+settings (including a dedicated HF credential record), chats, and results;
+`localStorage` is reserved for tiny non-sensitive boot preferences. Runtime-native
+caches remain adapter-owned only where a supported runtime integration requires them,
+and browser-managed models are represented by availability/acquisition state rather
+than fictitious file records. Adapters must inventory native entries and byte
+confidence where observable. Local imports receive a computed WebAI SHA-256 content
+identity before promotion; they do not invent HF revision fields.
+
+A native-cache path does not waive M2's immutable identity, restart-safe resume, or
+integrity guarantees: it must consume WebAI-verified bytes or demonstrate equivalent
+behavior with a milestone-specific browser experiment. Byte reports always state scope
+and confidence (`exact-file`, `adapter-reported`, `estimated-origin`, or `unknown`).
+The manifest is the authoritative catalog but not proof that bytes still exist;
+startup/error reconciliation turns missing data into an explicit evicted/missing
+state.
+
+The versioned runtime adapter contract uses discriminated artifact-set, native-cache,
+and browser-managed model targets, and declares acquisition ownership, execution
+context, structured backend configuration, model-scoped capability evidence, lifecycle,
+streamed generation events, and inventory. Runtime sessions normally own isolated
+worker lifecycles; adapters may own a library's worker directly instead of adding a
+generic nesting layer. Prompt API remains D-007's sole main-thread exception. Heavy
+runtimes are loaded only after capability gates.
+
+**Context:** The 2026-07-17 runtime survey found four irreducible acquisition shapes:
+app-managed files (wllama/LiteRT-LM), library caches (Transformers.js), app assets plus
+library caches (WebLLM), and browser-managed storage (Prompt API). Pretending all bytes
+fit one OPFS API would either reject selected runtimes or conceal their real cache
+behavior; allowing fully independent caches would lose common provenance, integrity,
+quota reporting, import, and eviction UX. D-012 also established that browser stores
+and quota are origin-wide even though WebAI namespaces them.
+
+**Consequences:** M2 builds the common manifest, OPFS layout, staged promotion, and
+reconciliation for app-managed artifacts. M7 extends the same model manager with
+adapter inventories and measured native-cache guarantees. Deduplication is available
+for content-identified WebAI-owned bytes but is not promised across opaque caches.
+Installed, partial, verifying, missing/evicted, corrupt, deleting, and failed states
+are explicit. Features question 3 is answered. The detailed contracts and milestone
+mapping live in [architecture.md](architecture.md).
+
+**Reopen if:** A selected library exposes a supported external-byte/cache provider
+that lets all model data move into the shared OPFS store; a required native cache
+cannot expose enough identity or control to meet the M2 guarantees; or browser storage
+semantics make the staged recovery protocol unsafe. Reopen the affected adapter or
+data plane, not the common management requirement, unless product scope changes.
+
 ## D-013: Pin downloads to repo commits and LFS identity  (2026-07-17, status: accepted)
 
 **Decision:** Use a two-stage Hugging Face discovery/acquisition flow and an immutable

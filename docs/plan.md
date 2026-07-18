@@ -55,9 +55,12 @@ owner plus targeted research/spikes where a decision needs evidence.
       2026-07-17: [hugging-face-api.md](hugging-face-api.md) and D-013 select
       commit-pinned metadata, fresh per-range resolution, strict range validation,
       final LFS SHA-256 verification, and two-stage suitability filtering.)*
-- [ ] First full draft of [architecture.md](architecture.md): runtime adapter
+- [x] First full draft of [architecture.md](architecture.md): runtime adapter
       abstraction, worker topology, storage layout, download manager, capability
       gating, benchmark harness design.
+      *(Done 2026-07-17: D-014 selects one model control plane over hybrid physical
+      storage and fixes the supervised adapter/worker boundary; D-015 defines
+      evidence-labelled benchmark semantics. These close features questions 3/4.)*
 - [ ] Toolchain decisions: Astro version + islands framework (React? Svelte? none?),
       package manager, test stack (unit + e2e), lint/format, CI, license audit.
       Record in decisions.md.
@@ -97,9 +100,10 @@ Depends on M0: hosting spike, toolchain decisions, UI/design direction.
       unit + e2e test stacks, lint/format, CI with license audit.
 - [ ] App shell: navigation, look-and-feel foundation (theming, design tokens),
       project details/about page.
-- [ ] Capability layer (stable environment probes per architecture.md) and the
-      capability-report page as the first real feature — it exercises the gating
-      everything else consumes and starts feeding rough-edges.md.
+- [ ] Capability layer (stable environment probes plus the evidence/invalidation
+      framework and storage quota as its first volatile input, per architecture.md)
+      and the capability-report page as the first real feature — it exercises the
+      gating everything else consumes and starts feeding rough-edges.md.
 - [ ] Deploy pipeline: build + rsync to https://meenan.dev/webai/ with the headers
       chosen by the hosting spike; verify base path, isolation state, and HF CORS
       from the real origin.
@@ -215,7 +219,7 @@ early-preview LiteRT-LM, rejected maintenance-only MediaPipe, and kept direct ON
 Runtime Web parked (D-011).
 
 - [ ] transformers.js adapter: wasm / WebGPU / WebNN backends, per-backend gating,
-      its own model-cache accounting story (features.md open question 3), and a
+      native-cache inventory/accounting under D-014's shared control plane, and a
       download path that integrates or experimentally demonstrates M2's
       resume-after-tab-close and HF-LFS integrity guarantees — this is where
       cross-runtime cache accounting from the M2 storage UI becomes real.
@@ -256,7 +260,7 @@ multiple runtimes to compare.
 - [ ] Prompt library: saved/named prompts and reusable test sets, sharing the
       dataset design (D-010).
 - [ ] Standard metric set incl. memory, per the isolation decision; labeling for
-      what each backend cannot measure (open question 4).
+      what each backend cannot measure under D-015's evidence-labelled schema.
 - [ ] Iterations with median/p95 and variance.
 - [ ] Results history + JSON/CSV export.
 

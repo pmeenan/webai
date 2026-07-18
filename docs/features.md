@@ -2,8 +2,8 @@
 
 The scope ledger. The M0 feature triage (2026-07-17, owner walk — verdicts and
 rationale in D-010) plus the runtime survey (D-011) resolved every `proposed` row.
-The hosting spike (D-012) answered question 1 and validated question 8; only questions
-3 and 4 remain open, both owned by the M0 architecture draft.
+The hosting spike (D-012) answered question 1 and validated question 8; the architecture
+draft answered the final questions 3 and 4 (D-014, D-015).
 
 - **Confirmed** — stated project scope. Milestone assignment lives in
   [plan.md](plan.md); milestone references in notes here are informative.
@@ -84,8 +84,9 @@ Status legend: `confirmed · proposed · parked (D-NNN) · rejected (D-NNN)`
 ## Open questions
 
 Questions 2, 5, 6, 7, and 8 were answered at the 2026-07-17 triage (D-010), and the
-hosting spike answered question 1 while validating question 8 (D-012). Questions 3
-and 4 remain open. The final `proposed` runtime row was resolved by D-011.
+hosting spike answered question 1 while validating question 8 (D-012). The M0
+architecture draft answered questions 3 and 4 (D-014, D-015). The final `proposed`
+runtime row was resolved by D-011.
 
 1. **Cross-origin isolation.** *Answered (D-012):* isolate the whole WebAI app with
    `COOP: same-origin` and `COEP: require-corp`. Chrome 150 successfully fetched the
@@ -95,12 +96,15 @@ and 4 remain open. The final `proposed` runtime row was resolved by D-011.
 2. **Mobile.** *Answered (D-010): best-effort.* Nothing is gated on mobile; it works
    where it works, failures are logged as rough-edges findings, and v1 makes no
    mobile-specific UX investment.
-3. **Model storage layout.** *Open — M0 architecture draft.* One shared OPFS store
-   with per-runtime adapters, or let each runtime keep its native cache? Affects
-   dedup, quota accounting, and import.
-4. **Benchmark honesty.** *Open — M0 architecture draft (harness design).* What can
-   we actually measure per backend (GPU memory is largely opaque; wasm heap vs JS
-   heap), and how do we label what we can't?
+3. **Model storage layout.** *Answered (D-014):* one WebAI manifest and model manager
+   over hybrid physical storage. App-owned artifacts use OPFS; unavoidable native and
+   browser-managed caches stay adapter-owned but are inventoried where observable and
+   must demonstrate the common resume/integrity guarantees. Byte counts state their
+   scope and confidence.
+4. **Benchmark honesty.** *Answered (D-015):* every metric carries source, scope,
+   support state, and caveats. Unsupported token/memory dimensions are unavailable,
+   not inferred; sampled attributed memory is “maximum observed sample,” never a
+   claimed true peak; comparisons flag incompatible measurement contexts.
 5. **Prompt API surface.** *Answered (D-010): closed as process.* Root rule 4 already
    mandates verifying the current API surface (availability, download UX, parameters,
    multimodal) against current Chrome docs at build time; no separate planning answer
