@@ -26,9 +26,9 @@ documentation, directed and reviewed by a human.
 ## Status
 
 **M0, M1, M2, and M4 are complete; M3 is implemented locally and awaiting its live
->2 GB exit check.** Verified acquisition, managed storage, bounded GGUF splitting, the
-measured wllama path, and a browser-verified Gemini Nano adapter are available — see
-[docs/plan.md](docs/plan.md).
+multi-gigabyte (>2 GB) exit check.** Verified acquisition, managed storage, bounded
+GGUF splitting, the measured wllama path, and a browser-verified Gemini Nano adapter
+are available — see [docs/plan.md](docs/plan.md).
 
 ## Develop
 

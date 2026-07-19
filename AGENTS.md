@@ -118,8 +118,8 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 ## Current status
 
 **M0, M1, M2, and M4 are complete; M3 is implemented locally and awaiting its live
->2 GB exit check.** Verified acquisition, the OPFS model manager, bounded GGUF
-splitting, the measured wllama path, and a browser-verified Gemini Nano adapter are
-available; see
+multi-gigabyte (>2 GB) exit check.** Verified acquisition, the OPFS model manager,
+bounded GGUF splitting, the measured wllama path, and a browser-verified Gemini Nano
+adapter are available; see
 [docs/plan.md](docs/plan.md). Keep this paragraph current when plan.md milestone
 status changes (rule 5).
