@@ -1,4 +1,10 @@
 import { descriptorById } from "./descriptors";
+import { runBoundedOperation } from "../bounded-operation";
+import {
+  isPromptApiAvailability,
+  promptApiProbeTimeoutMs,
+  promptApiTextOptions,
+} from "../prompt-api-surface";
 import {
   absentOutcome,
   indeterminateOutcome,
@@ -13,34 +19,6 @@ import {
 import { sanitizeThrown, timeoutFailure } from "./sanitize";
 
 const storageProbeTimeoutMs = 5_000;
-
-type BoundedOperationResult<T> =
-  | { readonly kind: "value"; readonly value: T }
-  | { readonly kind: "error"; readonly error: unknown }
-  | { readonly kind: "timeout" };
-
-function runBoundedPageOperation<T>(
-  operation: () => Promise<T>,
-): Promise<BoundedOperationResult<T>> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (result: BoundedOperationResult<T>) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      resolve(result);
-    };
-    const timeout = window.setTimeout(() => finish({ kind: "timeout" }), storageProbeTimeoutMs);
-    try {
-      void operation().then(
-        (value) => finish({ kind: "value", value }),
-        (error: unknown) => finish({ kind: "error", error }),
-      );
-    } catch (error: unknown) {
-      finish({ kind: "error", error });
-    }
-  });
-}
 
 type PageCapabilityId = Exclude<
   CapabilityId,
@@ -117,7 +95,10 @@ async function probeStorageEstimate(
   if (navigator.storage === undefined || typeof navigator.storage.estimate !== "function") {
     estimateOutcome = absentOutcome("api-missing");
   } else {
-    const result = await runBoundedPageOperation(() => navigator.storage.estimate());
+    const result = await runBoundedOperation(
+      () => navigator.storage.estimate(),
+      storageProbeTimeoutMs,
+    );
     if (result.kind === "timeout") {
       estimateOutcome = indeterminateOutcome("probe-timeout", timeoutFailure());
     } else if (result.kind === "error") {
@@ -157,7 +138,10 @@ async function probeStoragePersistenceState(
   if (navigator.storage === undefined || typeof navigator.storage.persisted !== "function") {
     persistedOutcome = absentOutcome("api-missing");
   } else {
-    const result = await runBoundedPageOperation(() => navigator.storage.persisted());
+    const result = await runBoundedOperation(
+      () => navigator.storage.persisted(),
+      storageProbeTimeoutMs,
+    );
     if (result.kind === "timeout") {
       persistedOutcome = indeterminateOutcome("probe-timeout", timeoutFailure());
     } else if (result.kind === "error") {
@@ -179,11 +163,95 @@ export async function runVolatileStorageProbes(
   return await Promise.all([probeStorageEstimate(trigger), probeStoragePersistenceState(trigger)]);
 }
 
+export async function runVolatilePromptApiProbe(
+  trigger: EvidenceFor<"prompt-api.page.availability">["trigger"],
+): Promise<EvidenceFor<"prompt-api.page.availability">> {
+  const startedAt = performance.now();
+  let candidate: unknown;
+  try {
+    candidate = (globalThis as typeof globalThis & { readonly LanguageModel?: unknown })
+      .LanguageModel;
+  } catch (error) {
+    return evidence(
+      "prompt-api.page.availability",
+      indeterminateOutcome("operation-failed", sanitizeThrown(error)),
+      startedAt,
+      trigger,
+    );
+  }
+  if ((typeof candidate !== "object" && typeof candidate !== "function") || candidate === null) {
+    return evidence(
+      "prompt-api.page.availability",
+      absentOutcome("api-missing"),
+      startedAt,
+      trigger,
+    );
+  }
+  let availability: unknown;
+  try {
+    availability = "availability" in candidate ? candidate.availability : undefined;
+  } catch (error) {
+    return evidence(
+      "prompt-api.page.availability",
+      indeterminateOutcome("operation-failed", sanitizeThrown(error)),
+      startedAt,
+      trigger,
+    );
+  }
+  if (typeof availability !== "function") {
+    return evidence(
+      "prompt-api.page.availability",
+      absentOutcome("api-missing"),
+      startedAt,
+      trigger,
+    );
+  }
+  const result = await runBoundedOperation(
+    () => Promise.resolve(availability.call(candidate, promptApiTextOptions)),
+    promptApiProbeTimeoutMs,
+  );
+  if (result.kind === "timeout") {
+    return evidence(
+      "prompt-api.page.availability",
+      indeterminateOutcome("probe-timeout", timeoutFailure()),
+      startedAt,
+      trigger,
+    );
+  }
+  if (result.kind === "error") {
+    const failure = sanitizeThrown(result.error);
+    return evidence(
+      "prompt-api.page.availability",
+      indeterminateOutcome(
+        failure.code === "permission" ? "permission-blocked" : "operation-failed",
+        failure,
+      ),
+      startedAt,
+      trigger,
+    );
+  }
+  if (!isPromptApiAvailability(result.value)) {
+    return evidence(
+      "prompt-api.page.availability",
+      indeterminateOutcome("protocol-error", {
+        category: "protocol-error",
+        code: "protocol",
+      }),
+      startedAt,
+      trigger,
+    );
+  }
+  return evidence("prompt-api.page.availability", valueOutcome(result.value), startedAt, trigger);
+}
+
 export async function requestStoragePersistence(): Promise<ProbeOutcome<boolean>> {
   if (navigator.storage === undefined || typeof navigator.storage.persist !== "function") {
     return absentOutcome("api-missing");
   }
-  const result = await runBoundedPageOperation(() => navigator.storage.persist());
+  const result = await runBoundedOperation(
+    () => navigator.storage.persist(),
+    storageProbeTimeoutMs,
+  );
   if (result.kind === "timeout") {
     return indeterminateOutcome("probe-timeout", timeoutFailure());
   }

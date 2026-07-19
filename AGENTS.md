@@ -3,7 +3,7 @@
 A fully client-side web tool for developers to discover, download, and test LLMs from
 Hugging Face directly in the browser — across runtimes (wllama, transformers.js, and
 others) and execution backends (WASM on CPU, WebGPU, WebNN) — plus browser-managed
-models (Chrome's built-in Prompt API / Gemini Nano) as a separate, no-download path —
+models (Chrome's built-in Prompt API / Gemini Nano) as a separate, browser-owned acquisition path —
 so they can pick the right model, quantization, and library for their needs.
 Hosted at https://webai.meenan.dev/. Almost all code is written by AI agents working
 from the project documentation, directed and reviewed by a human.
@@ -117,8 +117,9 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 
 ## Current status
 
-**M0, M1, and M2 are complete; M3 is implemented locally and awaiting its live >2 GB
-exit check.** Verified acquisition, the OPFS model manager, bounded GGUF splitting,
-and the first measured wllama chat path are available; see
+**M0, M1, M2, and M4 are complete; M3 is implemented locally and awaiting its live
+>2 GB exit check.** Verified acquisition, the OPFS model manager, bounded GGUF
+splitting, the measured wllama path, and a browser-verified Gemini Nano adapter are
+available; see
 [docs/plan.md](docs/plan.md). Keep this paragraph current when plan.md milestone
 status changes (rule 5).

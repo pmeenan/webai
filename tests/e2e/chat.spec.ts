@@ -68,6 +68,313 @@ test("gates chat on an installed model and reports the measured MTP limitation",
     page.getByText("mounts an MTP companion separately", { exact: false }),
   ).toBeVisible();
   await expect(page.getByPlaceholder("Load a model first")).toBeDisabled();
+  await expect(page.locator("#prompt-api-gate-reason")).toContainText("Gemini Nano");
+});
+
+test("disables Gemini Nano with a reason when the Prompt API is missing", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(globalThis, "LanguageModel", {
+      configurable: true,
+      value: undefined,
+    });
+  });
+  await page.goto("./chat/");
+  const promptRuntime = page.getByLabel("Chrome Prompt API · Gemini Nano");
+  await expect(promptRuntime).toBeDisabled();
+  await expect(promptRuntime).toHaveAttribute("aria-describedby", "prompt-api-gate-reason");
+  await expect(page.locator("#prompt-api-gate-reason")).toContainText(
+    "does not expose the LanguageModel Prompt API",
+  );
+  await expect(page.getByLabel("wllama · managed GGUF")).toBeEnabled();
+});
+
+test("refreshes a volatile unavailable Prompt API gate", async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = globalThis as typeof globalThis & {
+      __webaiPromptAvailability?: "unavailable" | "available";
+    };
+    state.__webaiPromptAvailability = "unavailable";
+    Object.defineProperty(globalThis, "LanguageModel", {
+      configurable: true,
+      value: {
+        availability: async () => state.__webaiPromptAvailability,
+        create: async () => undefined,
+      },
+    });
+  });
+  await page.goto("./chat/");
+  const promptRuntime = page.getByLabel("Chrome Prompt API · Gemini Nano");
+  await expect(promptRuntime).toBeDisabled();
+  const refreshAvailability = page.getByRole("button", { name: "Refresh availability" });
+  await expect(refreshAvailability).toBeVisible();
+  await page.evaluate(() => {
+    (
+      globalThis as typeof globalThis & { __webaiPromptAvailability?: string }
+    ).__webaiPromptAvailability = "available";
+  });
+  await refreshAvailability.click();
+  await expect(promptRuntime).toBeEnabled();
+  await expect(page.getByText("Gemini Nano ready", { exact: true })).toBeVisible();
+});
+
+test("downloads and chats with browser-managed Gemini Nano on the shared surface", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const state = globalThis as typeof globalThis & {
+      __webaiPromptProgress?: (loaded: number) => void;
+      __webaiFinishPromptCreate?: () => void;
+      __webaiPromptInputs?: string[];
+      __webaiPromptDestroyCalls?: number;
+    };
+    state.__webaiPromptInputs = [];
+    state.__webaiPromptDestroyCalls = 0;
+    let installed = false;
+    Object.defineProperty(globalThis, "LanguageModel", {
+      configurable: true,
+      value: {
+        async availability(options: unknown) {
+          (
+            globalThis as typeof globalThis & { __webaiPromptAvailabilityOptions?: unknown }
+          ).__webaiPromptAvailabilityOptions = options;
+          return installed ? "available" : "downloadable";
+        },
+        create(options: {
+          monitor(monitor: {
+            addEventListener(
+              type: "downloadprogress",
+              listener: (event: { loaded: number; total: number }) => void,
+            ): void;
+          }): void;
+        }) {
+          let progressListener: ((event: { loaded: number; total: number }) => void) | undefined;
+          options.monitor({
+            addEventListener(_type, listener) {
+              progressListener = listener;
+            },
+          });
+          progressListener?.({ loaded: 0, total: 1 });
+          state.__webaiPromptProgress = (loaded) => progressListener?.({ loaded, total: 1 });
+          return new Promise((resolve) => {
+            state.__webaiFinishPromptCreate = () => {
+              installed = true;
+              const events = new EventTarget();
+              const session = {
+                contextUsage: 0,
+                contextWindow: 4_096,
+                addEventListener: events.addEventListener.bind(events),
+                removeEventListener: events.removeEventListener.bind(events),
+                promptStreaming(input: string) {
+                  state.__webaiPromptInputs?.push(input);
+                  return new ReadableStream<string>({
+                    start(controller) {
+                      if (state.__webaiPromptInputs?.length === 2) {
+                        events.dispatchEvent(new Event("contextoverflow"));
+                      }
+                      if (input !== "Empty response") {
+                        controller.enqueue("Browser-managed ");
+                        controller.enqueue("reply");
+                      }
+                      session.contextUsage += 12;
+                      controller.close();
+                    },
+                  });
+                },
+                destroy() {
+                  state.__webaiPromptDestroyCalls = (state.__webaiPromptDestroyCalls ?? 0) + 1;
+                },
+              };
+              resolve(session);
+            };
+          });
+        },
+      },
+    });
+  });
+
+  await page.goto("./chat/");
+  const promptRuntime = page.getByLabel("Chrome Prompt API · Gemini Nano");
+  await expect(promptRuntime).toBeEnabled();
+  await promptRuntime.check();
+  await expect(
+    page.getByRole("heading", { level: 2, name: "Chrome Prompt API session" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Browser-managed model")).toHaveValue("gemini-nano");
+  await expect(page.getByLabel("WASM threads")).toHaveCount(0);
+  await expect(page.getByText("Stable web pages do not expose sampling controls")).toBeVisible();
+
+  await page.getByRole("button", { name: "Download and load Gemini Nano" }).click();
+  const progress = page.getByRole("progressbar", {
+    name: "Downloading browser-managed Gemini Nano for Gemini Nano",
+  });
+  await page.evaluate(() => {
+    (
+      globalThis as typeof globalThis & { __webaiPromptProgress?: (loaded: number) => void }
+    ).__webaiPromptProgress?.(0.5);
+  });
+  await expect(progress).toHaveAttribute("value", "0.5");
+  await page.evaluate(() => {
+    (
+      globalThis as typeof globalThis & { __webaiPromptProgress?: (loaded: number) => void }
+    ).__webaiPromptProgress?.(1);
+  });
+  const loadingProgress = page.getByRole("progressbar", {
+    name: "Initializing browser-managed Gemini Nano for Gemini Nano",
+  });
+  await expect(loadingProgress).not.toHaveAttribute("value");
+  await page.evaluate(() => {
+    (
+      globalThis as typeof globalThis & { __webaiFinishPromptCreate?: () => void }
+    ).__webaiFinishPromptCreate?.();
+  });
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(page.getByText("Context window", { exact: true })).toBeVisible();
+  await expect(page.getByText("4,096", { exact: true })).toBeVisible();
+
+  const composer = page.getByLabel("Message");
+  await composer.fill("First question");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Browser-managed reply", { exact: true })).toBeVisible();
+  await expect(page.locator(".response-metrics").first().getByText("First output")).toBeVisible();
+  await expect(page.locator(".response-metrics").first().getByText("TTFT")).toHaveCount(0);
+  await expect(page.getByText("12 / 4,096", { exact: true })).toBeVisible();
+  await composer.fill("Second question");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("24 / 4,096", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Chrome discarded one or more older conversation turns"),
+  ).toBeVisible();
+  await composer.fill("Empty response");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Gemini Nano completed without returning text.")).toBeVisible();
+  await expect(page.getByText(/Expand the completed channels/)).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () =>
+        (globalThis as typeof globalThis & { __webaiPromptInputs?: string[] }).__webaiPromptInputs,
+    ),
+  ).toEqual(["First question", "Second question", "Empty response"]);
+
+  await page.getByLabel("wllama · managed GGUF").check();
+  expect(
+    await page.evaluate(
+      () =>
+        (globalThis as typeof globalThis & { __webaiPromptDestroyCalls?: number })
+          .__webaiPromptDestroyCalls,
+    ),
+  ).toBe(1);
+});
+
+test("shows reacquisition progress and stops a pending browser-managed session load", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const state = globalThis as typeof globalThis & { __webaiPromptLoadAborted?: boolean };
+    Object.defineProperty(globalThis, "LanguageModel", {
+      configurable: true,
+      value: {
+        availability: async () => "available",
+        create(options: {
+          signal: AbortSignal;
+          monitor(monitor: {
+            addEventListener(
+              type: "downloadprogress",
+              listener: (event: { loaded: number; total: number }) => void,
+            ): void;
+          }): void;
+        }) {
+          options.monitor({
+            addEventListener(_type, listener) {
+              listener({ loaded: 0, total: 1 });
+              listener({ loaded: 0.5, total: 1 });
+            },
+          });
+          return new Promise((_resolve, reject) => {
+            options.signal.addEventListener(
+              "abort",
+              () => {
+                state.__webaiPromptLoadAborted = true;
+                reject(new DOMException("stopped", "AbortError"));
+              },
+              { once: true },
+            );
+          });
+        },
+      },
+    });
+  });
+
+  await page.goto("./chat/");
+  await page.getByLabel("Chrome Prompt API · Gemini Nano").check();
+  await page.getByRole("button", { name: "Load Gemini Nano" }).click();
+  await expect(
+    page.getByRole("progressbar", {
+      name: "Downloading browser-managed Gemini Nano for Gemini Nano",
+    }),
+  ).toHaveAttribute("value", "0.5");
+  const stop = page.getByRole("button", { name: "Stop Gemini Nano loading" });
+  await expect(stop).toBeEnabled();
+  await stop.click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (globalThis as typeof globalThis & { __webaiPromptLoadAborted?: boolean })
+            .__webaiPromptLoadAborted,
+      ),
+    )
+    .toBe(true);
+  await expect(page.getByRole("button", { name: "Load Gemini Nano" })).toBeEnabled();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("keeps an explicit stopped state when Gemini Nano is aborted before output", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const events = new EventTarget();
+    const session = {
+      contextUsage: 0,
+      contextWindow: 2_048,
+      addEventListener: events.addEventListener.bind(events),
+      removeEventListener: events.removeEventListener.bind(events),
+      promptStreaming(_input: string, options?: { signal?: AbortSignal }) {
+        return new ReadableStream<string>({
+          start(controller) {
+            options?.signal?.addEventListener(
+              "abort",
+              () => controller.error(new DOMException("racing failure", "NetworkError")),
+              { once: true },
+            );
+          },
+        });
+      },
+      destroy() {},
+    };
+    Object.defineProperty(globalThis, "LanguageModel", {
+      configurable: true,
+      value: {
+        availability: async () => "available",
+        async create(options: { monitor(monitor: { addEventListener(): void }): void }) {
+          options.monitor({ addEventListener() {} });
+          return session;
+        },
+      },
+    });
+  });
+
+  await page.goto("./chat/");
+  await page.getByLabel("Chrome Prompt API · Gemini Nano").check();
+  await page.getByRole("button", { name: "Load Gemini Nano" }).click();
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  await page.getByLabel("Message").fill("Wait forever");
+  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Stop" }).click();
+  await expect(
+    page.getByText("Generation stopped before the runtime returned text."),
+  ).toBeVisible();
+  await expect(page.getByText("Stopped response.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("keeps runtime axes and the chat stream usable at narrow widths", async ({ page }) => {

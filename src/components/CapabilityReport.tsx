@@ -60,6 +60,12 @@ function verdictFor(evidence: CapabilityEvidence | undefined): CapabilityVerdict
       ? "supported"
       : "degraded";
   }
+  if (evidence.id === "prompt-api.page.availability") {
+    const availability = value as string;
+    if (availability === "available") return "supported";
+    if (availability === "downloadable" || availability === "downloading") return "degraded";
+    return "unsupported";
+  }
   return "supported";
 }
 
@@ -85,6 +91,16 @@ function describeOutcome(evidence: CapabilityEvidence): string {
   if (evidence.id === "storage.estimate") {
     const estimate = value as StorageEstimateValue;
     return `Usage ${formatBytes(estimate.usageBytes)} · quota ${formatBytes(estimate.quotaBytes)} · origin-wide estimate`;
+  }
+  if (evidence.id === "prompt-api.page.availability") {
+    const availability = value as string;
+    return availability === "available"
+      ? "Gemini Nano is ready for an English text session."
+      : availability === "downloadable"
+        ? "Gemini Nano is supported and requires a browser-managed download."
+        : availability === "downloading"
+          ? "The browser reports that Gemini Nano is downloading."
+          : "The browser exposes the Prompt API, but this model configuration is unavailable.";
   }
   if (evidence.id === "webgpu.worker") {
     const gpu = value as WebGpuSnapshot;
@@ -167,6 +183,13 @@ const capabilityGroups = [
     label: "Storage",
     descriptors: capabilityDescriptors.filter(
       (descriptor) => descriptor.id.startsWith("storage.") || descriptor.id.startsWith("opfs."),
+    ),
+  },
+  {
+    id: "browser-ai",
+    label: "Browser-managed AI",
+    descriptors: capabilityDescriptors.filter((descriptor) =>
+      descriptor.id.startsWith("prompt-api."),
     ),
   },
 ] as const;

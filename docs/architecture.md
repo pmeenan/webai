@@ -127,7 +127,17 @@ Each adapter has a lightweight descriptor available without loading its engine:
 
 ### Operations
 
-The logical interface is versioned independently of any worker transport. It exposes:
+M4 replaces the provisional assumption that every operation belongs on one uniform
+adapter object (D-030). The implemented active-session core is versioned independently
+of worker transport and consists of a lightweight descriptor, a discriminated
+`ModelTarget`/session record, ordered generation events, an abort signal for the active
+request, and idempotent session/adapter disposal. Creation is a discriminated adapter
+facet: wllama takes an app-owned artifact set and explicit backend options, while
+Prompt API synchronously couples browser acquisition and session creation. Consumers
+branch on that typed creation request rather than passing meaningless optional files
+or backend fields.
+
+The broader controller grows variant facets as their first real consumers land:
 
 1. `probe(environment)` — refine the static descriptor using current environment
    evidence without acquiring a model.
@@ -135,25 +145,32 @@ The logical interface is versioned independently of any worker transport. It exp
    target, or probe browser-managed availability as its variant permits; returns
    model-specific compatibility, dependencies, chat-template support, modalities,
    limits, and structured-output strength without requiring fictitious files.
-3. `acquire(request)` — only for native-cache or browser-managed targets whose
+3. `acquire(request)` — only for native-cache targets whose
    acquisition cannot use the shared download manager; reports durable or browser-
    observable progress, result state, and inventory records through the model
-   repository.
-4. `createSession(modelTarget, backend, options)` — returns a typed `SessionHandle`,
+   repository. Prompt API's browser acquisition is inseparable from its creation
+   facet and streams the same progress vocabulary.
+4. a controller-level `createSession(request)` — dispatches the discriminated adapter
+   facet and returns a typed `SessionHandle`,
    requested/effective configuration and session capabilities, or a typed failure. A
    backend is structured data: for example, wllama thread count and GPU offload are
    independent fields.
-5. `generate(sessionHandle, request)` — emits an ordered stream of lifecycle, text/token,
+5. controller-level `generate(sessionHandle, request)` — emits an ordered stream of lifecycle, text/token,
    usage, metric, warning, completion, or error events. Request IDs make late events
    from an aborted generation harmless.
-6. `abort(sessionHandle, requestId)`, `disposeSession(sessionHandle)`, and
+6. controller-level `abort(sessionHandle, requestId)`, `disposeSession(sessionHandle)`, and
    `disposeAdapter()` — idempotent lifecycle operations with bounded shutdown followed
    by worker termination if the runtime does not cooperate. Handles are opaque,
    adapter-scoped, and invalid after disposal or worker restart.
-7. `inventory()` — reports native-cache entries, byte counts and confidence, source
+7. adapter `inventory()` facets — report native-cache entries, byte counts and confidence, source
    identities, and eviction/missing state where the adapter can observe them.
 
-Worker messages use a discriminated, schema-validated protocol carrying a protocol
+M3/M4 Chat has one active in-memory session and request, so its direct adapter path
+uses the request's `AbortSignal` and lifecycle generation rather than fabricating
+opaque handles or worker protocol sequence numbers. M6 history/regeneration and M8
+benchmark concurrency must add the controller facade, handles, request IDs, completion
+events, and requested/effective control records before they create multiple concurrent
+consumers. Worker messages use a discriminated, schema-validated protocol carrying a protocol
 version, adapter ID, session ID, request ID, and sequence number. Unknown message
 variants fail closed with a diagnostic. Errors cross the boundary as typed error data
 (`code`, safe message, retryability, phase, optional cause code), never as trusted HTML
@@ -540,6 +557,34 @@ Native-cache adapters must either accept the same verified acquisition output or
 demonstrate, with milestone-specific browser tests, equivalent commit pinning,
 restart-safe resume, and integrity before they ship. A library default cache is not
 accepted as equivalent by assertion.
+
+### M4 implementation profile
+
+D-030 adds a second discriminated runtime/session path with a stable
+`browser-managed` Gemini Nano target. Both adapters implement the shared descriptor,
+generation-event, abort, and disposal contract; session creation remains
+variant-specific because wllama consumes an app-owned artifact set and Prompt API
+couples browser-owned acquisition to `LanguageModel.create()`. The Prompt controller
+runs on `Window` under D-007, calls `create()` in the synchronous user-click stack so
+a first download retains transient user activation, and passes the same English-text
+modality/language declaration used by its availability probe. The runtime adapter and
+capability report import that declaration, availability-state validator, timeout, and
+bounded-operation helper from one browser-surface module so their probes cannot drift.
+Browser availability is also volatile capability evidence and is re-probed after
+visibility returns.
+
+Chrome's progress event is normalized only as a 0–1 combined fraction, never bytes.
+`loaded === 1` transitions to an indeterminate browser extraction/load phase until
+session creation resolves. Prompt sessions retain conversation state, so the adapter
+sends only the newest user turn rather than replaying Chat's complete transcript.
+When Chrome emits `contextoverflow`, the response receives a visible warning that the
+browser discarded older turns even though the UI transcript remains intact.
+Incremental text remains untrusted React-rendered text. The common response record
+contains page-observed session-create, first-output, and end-to-end time; Prompt API adds
+browser-reported `contextUsage`/`contextWindow` and leaves token counts, prefill/decode
+rates, backend identity, model bytes, and memory unavailable. Standard web pages
+expose no stable sampling control, so the UI labels sampling and backend selection as
+browser-managed instead of inventing parameters.
 
 ## Chat and benchmark consumers
 

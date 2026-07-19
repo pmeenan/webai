@@ -23,6 +23,70 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-030: Prompt API keeps browser-managed acquisition and state visible in the shared runtime contract  (2026-07-19, status: accepted)
+
+**Decision:** M4 amends the architecture's provisional assumption that every logical
+operation must be a method on one uniform adapter object. Gemini Nano is a stable
+`browser-managed` model target and Chrome Prompt API is a
+`browser-managed-main-thread` adapter. The implemented common adapter
+surface covers descriptor identity, ordered generation events, request abort, and
+idempotent disposal. Session creation remains variant-specific: wllama receives an
+app-owned artifact set plus backend controls, while Prompt API receives no fictitious
+file or backend and calls `LanguageModel.create()` for coupled browser acquisition and
+session creation. That call occurs before the first asynchronous yield from the Load
+button because initiating a missing-model download can require transient user
+activation.
+
+The Prompt adapter and capability report share one browser-surface module containing
+the fixed English text `expectedInputs`/`expectedOutputs`, availability validator,
+timeout, and bounded-operation helper; session creation uses the same declarations.
+It normalizes only the documented `unavailable`, `downloadable`, `downloading`, and `available` states.
+Missing or explicitly unavailable is gated; exceptions or new response shapes remain
+unknown and retryable. The 0–1 `downloadprogress.loaded` value is displayed as one
+browser-managed combined fraction, never bytes. After it reaches one, loading is
+indeterminate until `create()` resolves. Chrome may continue or retain browser-owned
+download work after WebAI aborts; retry always re-probes instead of claiming cleanup.
+
+Prompt sessions are stateful. Each Chat submission sends only the newest user turn,
+while the browser retains accepted earlier turns. The adapter concatenates
+incremental `promptStreaming()` strings, aborts a specific generation through its
+signal, and calls `destroy()` when switching or reloading. A `contextoverflow` event
+becomes a visible per-response warning that Chrome discarded older browser-session
+turns; WebAI keeps its transcript but does not imply the browser retained all of it.
+Measurements are limited to
+session creation time, page-observed first-output/end-to-end, and the session's
+`contextUsage`/`contextWindow`. Prompt/completion token counts, prefill/decode rates,
+token identity, backend, model/cache bytes, and model/process memory remain
+unavailable. Stable web pages expose no sampling controls, so M4 exposes none; it does
+not treat extension-only `topK`/temperature or the evolving `samplingMode` origin
+trial as production capability.
+
+**Context:** Checked 2026-07-19 against the [Chrome Prompt API documentation](https://developer.chrome.com/docs/ai/prompt-api)
+(updated 2026-05-19), [Chrome's model-download UX guidance](https://developer.chrome.com/docs/ai/inform-users-of-model-download),
+the [current Prompt API draft](https://webmachinelearning.github.io/prompt-api/), and
+the [sampling-mode origin-trial update](https://groups.google.com/a/chromium.org/g/blink-dev/c/4KvH5XEBYtE).
+Chrome documents the web surface from version 148, Window-only exposure, user
+activation for download-triggering creation, fractional progress, stateful sessions,
+incremental streaming, context attributes, abort, and destroy. A local secure-page
+measurement in stable Chrome 150.0.7871.128 on Linux found `LanguageModel` present but
+English text availability `unavailable`; its statics were exactly `availability` and
+`create`, and its session prototype had current `contextUsage`/`contextWindow` names
+with no legacy names or sampling fields (RE-024). Deterministic browser tests therefore
+inject the documented surface; real capability tests accept the browser's actual
+volatile state instead of requiring model availability in CI. The owner manually
+verified the supported interactive browser path and shared-chat exit criteria on
+2026-07-19.
+
+**Consequences:** Runtime and session types are discriminated by target/execution
+shape instead of embedding wllama assumptions. The capability report gains volatile
+Prompt API evidence, and Chat can switch the same display/composer/metric surface
+without implying that browser-owned storage is OPFS inventory. M4 is complete after
+the supported interactive browser verification recorded above.
+
+**Reopen if:** Prompt API moves to workers; sampling controls ship for ordinary web
+pages; Chrome exposes attributable backend, token, storage, or memory evidence; the
+session becomes stateless; or session creation no longer owns browser acquisition.
+
 ## D-029: Chat retains token identity for bounded output diagnostics  (2026-07-18, status: accepted)
 
 **Decision:** The wllama adapter remains on `createChatCompletion`; raw-prompt

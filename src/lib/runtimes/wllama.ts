@@ -6,7 +6,9 @@ import type {
   GenerationEvent,
   RuntimeDescriptor,
   RuntimeLoadEvent,
-  RuntimeSession,
+  RuntimeAdapter,
+  WllamaRuntimeDescriptor,
+  WllamaRuntimeSession,
   WllamaBackend,
 } from "./types";
 import { wllamaRuntimeAssets } from "./wllama-assets";
@@ -114,11 +116,12 @@ async function loadRuntimeAssets(): Promise<{
   };
 }
 
-export const wllamaDescriptor: RuntimeDescriptor = {
+export const wllamaDescriptor: WllamaRuntimeDescriptor = {
   id: "wllama",
   displayName: "wllama",
   adapterVersion: "webai-1",
   engineVersion: "wllama 3.5.1 / llama.cpp b9640-dd4623a",
+  acquisitionOwnership: "app-file",
   executionContext: "adapter-owned-library-worker",
   mtp: {
     verdict: "unsupported",
@@ -223,10 +226,10 @@ function safeRuntimeFailure(error: unknown, phase: "load" | "generate"): ModelOp
   );
 }
 
-export class WllamaRuntimeAdapter {
+export class WllamaRuntimeAdapter implements RuntimeAdapter {
   #runtime: WllamaInstance | undefined;
   #loadingRuntime: WllamaInstance | undefined;
-  #session: RuntimeSession | undefined;
+  #session: WllamaRuntimeSession | undefined;
   #lifecycle = 0;
 
   get descriptor(): RuntimeDescriptor {
@@ -237,7 +240,7 @@ export class WllamaRuntimeAdapter {
     model: InstalledModelRecord,
     requested: WllamaBackend,
     onProgress?: (event: RuntimeLoadEvent) => void,
-  ): Promise<RuntimeSession> {
+  ): Promise<WllamaRuntimeSession> {
     await this.dispose();
     const lifecycle = this.#lifecycle;
     const files = await loadableFiles(model, onProgress);
@@ -296,8 +299,9 @@ export class WllamaRuntimeAdapter {
       }
       throw safeRuntimeFailure(error, "load");
     }
-    const session: RuntimeSession = {
-      model,
+    const session: WllamaRuntimeSession = {
+      runtimeId: "wllama",
+      modelTarget: { kind: "artifact-set", model },
       backend: {
         threads,
         gpuLayers,
@@ -332,8 +336,8 @@ export class WllamaRuntimeAdapter {
     let pendingText = "";
     const declaredSpecialTokens = new Map(
       (
-        session.model.files.find((file) => file.inspection?.specialTokens !== undefined)?.inspection
-          ?.specialTokens ?? []
+        session.modelTarget.model.files.find((file) => file.inspection?.specialTokens !== undefined)
+          ?.inspection?.specialTokens ?? []
       ).map((token) => [token.id, token]),
     );
     const unrecognizedSpecialTokens = new Map<

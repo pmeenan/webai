@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { workerCapabilityIds, type CapabilitySnapshot, type EvidenceFor } from "./evidence";
 import { evaluateGate, threadedWasmGate, type GateDefinition } from "./gates";
 import { normalizeWebNnContext, normalizeWorkerIsolation } from "./normalize";
+import { runVolatilePromptApiProbe } from "./page-probes";
 import {
   capabilityProtocolVersion,
   parseProbeWorkerEvent,
@@ -443,6 +444,47 @@ describe("safe worker boundary", () => {
       }
     } finally {
       globalThis.Worker = nativeWorker;
+    }
+  });
+});
+
+describe("browser-managed capability evidence", () => {
+  test("records Prompt API absence and normalized browser availability", async () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, "LanguageModel");
+    try {
+      Object.defineProperty(globalThis, "LanguageModel", {
+        configurable: true,
+        value: undefined,
+      });
+      await expect(runVolatilePromptApiProbe("initial")).resolves.toMatchObject({
+        id: "prompt-api.page.availability",
+        stability: "volatile",
+        outcome: { kind: "absent", reason: "api-missing" },
+      });
+      Object.defineProperty(globalThis, "LanguageModel", {
+        configurable: true,
+        value: null,
+      });
+      await expect(runVolatilePromptApiProbe("initial")).resolves.toMatchObject({
+        outcome: { kind: "absent", reason: "api-missing" },
+      });
+      Object.defineProperty(globalThis, "LanguageModel", {
+        configurable: true,
+        value: { availability: async () => "downloadable" },
+      });
+      await expect(runVolatilePromptApiProbe("explicit-refresh")).resolves.toMatchObject({
+        outcome: { kind: "value", value: "downloadable" },
+      });
+      Object.defineProperty(globalThis, "LanguageModel", {
+        configurable: true,
+        value: { availability: async () => ({ toString: () => "available" }) },
+      });
+      await expect(runVolatilePromptApiProbe("explicit-refresh")).resolves.toMatchObject({
+        outcome: { kind: "indeterminate", reason: "protocol-error" },
+      });
+    } finally {
+      if (original === undefined) Reflect.deleteProperty(globalThis, "LanguageModel");
+      else Object.defineProperty(globalThis, "LanguageModel", original);
     }
   });
 });

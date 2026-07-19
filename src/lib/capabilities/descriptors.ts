@@ -136,6 +136,15 @@ export const capabilityDescriptors = [
     stability: "volatile",
     probeVersion: 1,
   },
+  {
+    id: "prompt-api.page.availability",
+    label: "Prompt API · Gemini Nano",
+    explanation:
+      "The window-only LanguageModel API's current English text availability for this browser-managed model.",
+    context: "page",
+    stability: "volatile",
+    probeVersion: 1,
+  },
 ] as const satisfies readonly CapabilityDescriptor[];
 
 export const descriptorById = new Map(

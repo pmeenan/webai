@@ -99,6 +99,8 @@ export interface StorageEstimateValue {
   readonly confidence: "estimated-origin";
 }
 
+export type PromptApiAvailabilityValue = PromptApiAvailability;
+
 export interface CapabilityValueMap {
   readonly "environment.page.secure-context": boolean;
   readonly "environment.page.cross-origin-isolated": boolean;
@@ -117,6 +119,7 @@ export interface CapabilityValueMap {
   readonly "opfs.worker.root-access": boolean;
   readonly "storage.estimate": StorageEstimateValue;
   readonly "storage.persisted": boolean;
+  readonly "prompt-api.page.availability": PromptApiAvailabilityValue;
 }
 
 export type CapabilityId = keyof CapabilityValueMap;
@@ -143,7 +146,11 @@ export interface EvidenceFor<K extends CapabilityId> {
   readonly context: EvidenceContext;
   readonly stability: EvidenceStability;
   readonly freshness: EvidenceFreshness;
-  readonly trigger: "initial" | "explicit-refresh" | "storage-invalidation";
+  readonly trigger:
+    | "initial"
+    | "explicit-refresh"
+    | "storage-invalidation"
+    | "browser-model-invalidation";
   readonly outcome: ProbeOutcome<CapabilityValueMap[K]>;
 }
 
@@ -169,3 +176,4 @@ export function indeterminateOutcome<T>(
     ? { kind: "indeterminate", reason }
     : { kind: "indeterminate", reason, failure };
 }
+import type { PromptApiAvailability } from "../prompt-api-surface";

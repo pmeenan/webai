@@ -1,5 +1,8 @@
 import {
   Bot,
+  CircleCheck,
+  CircleHelp,
+  CircleX,
   Gauge,
   Pause,
   Play,
@@ -10,19 +13,30 @@ import {
   TriangleAlert,
   User,
 } from "lucide-react";
-import { type SyntheticEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelWorkerEvent } from "../lib/models/protocol";
 import {
+  ModelOperationError,
   type InstalledModelRecord,
+  type ModelFailure,
   type ModelInventory,
   maximumDeclaredContextTokens,
 } from "../lib/models/types";
 import { ModelWorkerClient } from "../lib/models/worker-client";
 import { finalResponseText } from "../lib/runtimes/channel-parser";
+import {
+  PromptApiRuntimeAdapter,
+  promptApiDescriptor,
+  type PromptApiProbe,
+} from "../lib/runtimes/prompt-api";
 import type {
   ChatMessage,
   ModelOutputDiagnostics,
+  ResponseMetrics,
   ResponseChannel,
+  RuntimeAdapter,
+  RuntimeDescriptor,
+  RuntimeId,
   RuntimeLoadEvent,
   RuntimeSession,
 } from "../lib/runtimes/types";
@@ -49,7 +63,7 @@ function failureMessage(error: unknown): string {
     typeof error.message === "string"
   )
     return error.message;
-  return "The wllama session could not complete this operation.";
+  return "The runtime session could not complete this operation.";
 }
 
 function isAbortedFailure(error: unknown): boolean {
@@ -62,6 +76,26 @@ function isAbortedFailure(error: unknown): boolean {
     "code" in error.failure &&
     error.failure.code === "aborted"
   );
+}
+
+function generationFailure(error: unknown, aborted: boolean): ModelFailure {
+  if (aborted) {
+    return {
+      code: "aborted",
+      phase: "generate",
+      message: "Generation was stopped.",
+      retryable: true,
+    };
+  }
+  if (error instanceof ModelOperationError && error.failure.phase === "generate") {
+    return error.failure;
+  }
+  return {
+    code: "unsupported",
+    phase: "generate",
+    message: "The runtime did not complete this response.",
+    retryable: true,
+  };
 }
 
 function formatDuration(milliseconds: number | undefined): string {
@@ -113,8 +147,67 @@ function runtimeLoadProgress(event: RuntimeLoadEvent): ChatLoadProgress {
         detail:
           "This can take a while. wllama does not expose a percentage for loading stored browser files.",
       };
+    case "browser-model-download":
+      return {
+        label: "Downloading browser-managed Gemini Nano",
+        detail:
+          "Chrome reports one combined fraction for the model and customizations; exact bytes are not exposed.",
+        completed: event.loaded,
+        total: event.total,
+      };
+    case "browser-model-loading":
+      return {
+        label: "Initializing browser-managed Gemini Nano",
+        detail: "The download is complete. Chrome is extracting and loading the model.",
+      };
   }
 }
+
+interface RuntimeView {
+  readonly descriptor: RuntimeDescriptor;
+  readonly selectedStatus: string;
+  readonly generatingStatus: string;
+  readonly loadingHelp: string;
+  readonly readyHelp: string;
+  readonly emptyResponse: string;
+  readonly firstOutputLabel: string;
+  readonly firstOutputMetric: (metrics: ResponseMetrics) => number | undefined;
+  readonly showsTokenMetrics: boolean;
+  readonly composerPlaceholder: string;
+  readonly metricsHelp: string;
+}
+
+const runtimeViews = {
+  wllama: {
+    descriptor: wllamaDescriptor,
+    selectedStatus: "wllama selected. Choose an installed GGUF and load a session.",
+    generatingStatus: "wllama is generating a measured response.",
+    loadingHelp: "The session will become ready after wllama finishes loading the local weights.",
+    readyHelp: "Each assistant response reports load time, TTFT, prefill, and decode throughput.",
+    emptyResponse: "wllama completed without returning visible text.",
+    firstOutputLabel: "TTFT",
+    firstOutputMetric: (metrics) => metrics.timeToFirstTokenMs,
+    showsTokenMetrics: true,
+    composerPlaceholder: "Ask the local model…",
+    metricsHelp: "Metrics use wllama timings and page-observed TTFT.",
+  },
+  "prompt-api": {
+    descriptor: promptApiDescriptor,
+    selectedStatus: "Chrome Prompt API selected. Load the browser-managed Gemini Nano model.",
+    generatingStatus: "Gemini Nano is generating a measured response.",
+    loadingHelp:
+      "The session will become ready after Chrome downloads, extracts, and loads Gemini Nano.",
+    readyHelp:
+      "Each assistant response reports observable load time, first output, end-to-end time, and browser-reported context usage.",
+    emptyResponse: "Gemini Nano completed without returning text.",
+    firstOutputLabel: "First output",
+    firstOutputMetric: (metrics) => metrics.timeToFirstOutputMs,
+    showsTokenMetrics: false,
+    composerPlaceholder: "Ask Gemini Nano…",
+    metricsHelp:
+      "Prompt API metrics are page-observed; Chrome exposes no token rates or backend identity.",
+  },
+} satisfies Record<RuntimeId, RuntimeView>;
 
 function splitLoadProgress(
   event: Extract<ModelWorkerEvent, { type: "model/progress" }>,
@@ -233,14 +326,20 @@ function OutputDiagnosticsDetails({
 }
 
 export default function ChatWorkbench() {
-  const adapter = useRef<WllamaRuntimeAdapter | undefined>(undefined);
+  const wllamaAdapter = useRef<WllamaRuntimeAdapter | undefined>(undefined);
+  const promptApiAdapter = useRef<PromptApiRuntimeAdapter | undefined>(undefined);
   const modelClient = useRef<ModelWorkerClient | undefined>(undefined);
   const loadingModelId = useRef<string | undefined>(undefined);
   const contextModelId = useRef<string | undefined>(undefined);
   const contextEdited = useRef(false);
   const generationController = useRef<AbortController | undefined>(undefined);
   const assistantFrame = useRef<number | undefined>(undefined);
+  const runtimeIdRef = useRef<RuntimeId>("wllama");
+  const promptProbeGeneration = useRef(0);
   const [inventory, setInventory] = useState<ModelInventory | undefined>();
+  const [runtimeId, setRuntimeIdState] = useState<RuntimeId>("wllama");
+  const [promptApiProbe, setPromptApiProbe] = useState<PromptApiProbe>();
+  const [promptProbing, setPromptProbing] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [hardwareThreadLimit, setHardwareThreadLimit] = useState(1);
   const [threads, setThreads] = useState(1);
@@ -258,6 +357,26 @@ export default function ChatWorkbench() {
   const [error, setError] = useState<string | undefined>();
   const [status, setStatus] = useState("Loading the managed-model inventory.");
 
+  const setRuntimeId = (nextRuntimeId: RuntimeId) => {
+    runtimeIdRef.current = nextRuntimeId;
+    setRuntimeIdState(nextRuntimeId);
+  };
+
+  const refreshPromptApiProbe = useCallback((runtime?: PromptApiRuntimeAdapter) => {
+    const activeRuntime = runtime ?? promptApiAdapter.current;
+    if (activeRuntime === undefined) return;
+    const generation = ++promptProbeGeneration.current;
+    setPromptProbing(true);
+    void activeRuntime
+      .probe()
+      .then((probe) => {
+        if (generation === promptProbeGeneration.current) setPromptApiProbe(probe);
+      })
+      .finally(() => {
+        if (generation === promptProbeGeneration.current) setPromptProbing(false);
+      });
+  }, []);
+
   useEffect(() => {
     const reportedThreads = navigator.hardwareConcurrency;
     const availableThreads =
@@ -265,8 +384,10 @@ export default function ChatWorkbench() {
     setHardwareThreadLimit(availableThreads);
     setThreads(Math.max(1, Math.floor(availableThreads / 2)));
     const runtime = new WllamaRuntimeAdapter();
+    const browserRuntime = new PromptApiRuntimeAdapter();
     const client = new ModelWorkerClient();
-    adapter.current = runtime;
+    wllamaAdapter.current = runtime;
+    promptApiAdapter.current = browserRuntime;
     modelClient.current = client;
     const unsubscribe = client.subscribe((event: ModelWorkerEvent) => {
       if (event.type === "model/inventory") setInventory(event.inventory);
@@ -286,12 +407,17 @@ export default function ChatWorkbench() {
         setInventory(next);
         const first = next.models.find((model) => model.state === "installed");
         if (first !== undefined) setSelectedModelId(first.id);
-        setStatus("Choose a model and load a wllama session.");
+        if (runtimeIdRef.current === "wllama") {
+          setStatus("Choose a model and load a wllama session.");
+        }
       })
       .catch((failure) => {
-        setError(failureMessage(failure));
-        setStatus("Managed models are unavailable.");
+        if (runtimeIdRef.current === "wllama") {
+          setError(failureMessage(failure));
+          setStatus("Managed models are unavailable.");
+        }
       });
+    refreshPromptApiProbe(browserRuntime);
     return () => {
       generationController.current?.abort();
       generationController.current = undefined;
@@ -302,10 +428,26 @@ export default function ChatWorkbench() {
       unsubscribe();
       client.dispose();
       void runtime.dispose();
+      void browserRuntime.dispose();
       modelClient.current = undefined;
-      adapter.current = undefined;
+      wllamaAdapter.current = undefined;
+      promptApiAdapter.current = undefined;
     };
-  }, []);
+  }, [refreshPromptApiProbe]);
+
+  useEffect(() => {
+    let wasHidden = false;
+    const refreshAfterVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        wasHidden = true;
+      } else if (wasHidden) {
+        wasHidden = false;
+        refreshPromptApiProbe();
+      }
+    };
+    document.addEventListener("visibilitychange", refreshAfterVisibility);
+    return () => document.removeEventListener("visibilitychange", refreshAfterVisibility);
+  }, [refreshPromptApiProbe]);
 
   useEffect(() => {
     if (!loading) return;
@@ -345,11 +487,80 @@ export default function ChatWorkbench() {
     setError(undefined);
     setLoadProgress(undefined);
     setStatus("Model selection changed. Load a new wllama session to continue.");
-    void adapter.current?.dispose();
+    void wllamaAdapter.current?.dispose();
+  };
+
+  const changeRuntime = (nextRuntimeId: RuntimeId) => {
+    if (nextRuntimeId === runtimeId || loading || generating) return;
+    generationController.current?.abort();
+    generationController.current = undefined;
+    setRuntimeId(nextRuntimeId);
+    setSession(undefined);
+    setMessages([]);
+    setError(undefined);
+    setLoadProgress(undefined);
+    setStatus(runtimeViews[nextRuntimeId].selectedStatus);
+    void wllamaAdapter.current?.dispose();
+    void promptApiAdapter.current?.dispose();
   };
 
   const load = async () => {
-    const runtime = adapter.current;
+    if (runtimeId === "prompt-api") {
+      const runtime = promptApiAdapter.current;
+      if (runtime === undefined) return;
+      setLoadElapsedMs(0);
+      setLoading(true);
+      setError(undefined);
+      setSession(undefined);
+      setMessages([]);
+      setStatus("Chrome is creating a browser-managed Gemini Nano session.");
+      setLoadProgress(
+        promptApiProbe?.availability === "downloadable" ||
+          promptApiProbe?.availability === "downloading"
+          ? {
+              label: "Waiting for browser-managed Gemini Nano download",
+              detail:
+                "Chrome will report combined fractional progress; exact bytes are not exposed.",
+              completed: 0,
+              total: 1,
+            }
+          : {
+              label: "Initializing browser-managed Gemini Nano",
+              detail: "Chrome reports the model ready; session creation can still take time.",
+            },
+      );
+      try {
+        const availabilityBeforeLoad = promptApiProbe?.availability;
+        const loaded = await runtime.createSession((event) => {
+          if (
+            event.phase === "browser-model-download" &&
+            availabilityBeforeLoad === "available" &&
+            (event.loaded === 0 || event.loaded === 1)
+          ) {
+            return;
+          }
+          const next = runtimeLoadProgress(event);
+          setLoadProgress(next);
+          setStatus(next.label);
+        });
+        setSession(loaded);
+        setStatus(`Gemini Nano is ready after ${formatDuration(loaded.loadTimeMs)}.`);
+        refreshPromptApiProbe(runtime);
+      } catch (failure) {
+        if (isAbortedFailure(failure)) {
+          setStatus("Gemini Nano session loading was stopped.");
+        } else {
+          setError(failureMessage(failure));
+          setStatus("The Prompt API session load failed.");
+        }
+        refreshPromptApiProbe(runtime);
+      } finally {
+        setLoadProgress(undefined);
+        setLoading(false);
+      }
+      return;
+    }
+    const runtime = wllamaAdapter.current;
     const client = modelClient.current;
     if (runtime === undefined || client === undefined || selectedModel === undefined) return;
     setLoadElapsedMs(0);
@@ -446,23 +657,25 @@ export default function ChatWorkbench() {
 
   const submit = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const runtime = adapter.current;
+    const runtime: RuntimeAdapter | undefined =
+      runtimeId === "wllama" ? wllamaAdapter.current : promptApiAdapter.current;
     const text = prompt.trim();
     if (runtime === undefined || session === undefined || text.length === 0 || generating) return;
-    const user: ChatMessage = { id: makeId("user"), role: "user", content: text };
+    const user: ChatMessage = { id: makeId("user"), runtimeId, role: "user", content: text };
     const assistantId = makeId("assistant");
     const history = [...messages, user];
-    setMessages([...history, { id: assistantId, role: "assistant", content: "" }]);
+    setMessages([...history, { id: assistantId, runtimeId, role: "assistant", content: "" }]);
     setPrompt("");
     setGenerating(true);
     setError(undefined);
-    setStatus("wllama is generating a measured response.");
+    setStatus(runtimeViews[runtimeId].generatingStatus);
     const controller = new AbortController();
     generationController.current = controller;
     let pendingText = "";
     let pendingChannels: ChatMessage["channels"];
     let pendingMetrics: ChatMessage["metrics"];
     let pendingOutputDiagnostics: ChatMessage["outputDiagnostics"];
+    let pendingWarnings: ChatMessage["warnings"];
     let scheduledFrame: number | undefined;
     const flushAssistantUpdate = () => {
       scheduledFrame = undefined;
@@ -471,17 +684,20 @@ export default function ChatWorkbench() {
         pendingText.length === 0 &&
         pendingChannels === undefined &&
         pendingMetrics === undefined &&
-        pendingOutputDiagnostics === undefined
+        pendingOutputDiagnostics === undefined &&
+        pendingWarnings === undefined
       )
         return;
       const textUpdate = pendingText;
       const channelsUpdate = pendingChannels;
       const metricsUpdate = pendingMetrics;
       const diagnosticsUpdate = pendingOutputDiagnostics;
+      const warningsUpdate = pendingWarnings;
       pendingText = "";
       pendingChannels = undefined;
       pendingMetrics = undefined;
       pendingOutputDiagnostics = undefined;
+      pendingWarnings = undefined;
       setMessages((current) =>
         current.map((message) => {
           if (message.id !== assistantId) return message;
@@ -500,6 +716,12 @@ export default function ChatWorkbench() {
           if (diagnosticsUpdate !== undefined) {
             updated = { ...updated, outputDiagnostics: diagnosticsUpdate };
           }
+          if (warningsUpdate !== undefined) {
+            updated = {
+              ...updated,
+              warnings: [...(updated.warnings ?? []), ...warningsUpdate],
+            };
+          }
           return updated;
         }),
       );
@@ -516,9 +738,20 @@ export default function ChatWorkbench() {
         (runtimeEvent) => {
           if (runtimeEvent.type === "text") pendingText += runtimeEvent.text;
           if (runtimeEvent.type === "channels") pendingChannels = runtimeEvent.channels;
-          if (runtimeEvent.type === "metrics") pendingMetrics = runtimeEvent.metrics;
+          if (runtimeEvent.type === "metrics") {
+            pendingMetrics = runtimeEvent.metrics;
+            const contextUsage = runtimeEvent.metrics.contextUsage;
+            if (runtimeId === "prompt-api" && contextUsage !== undefined) {
+              setSession((current) =>
+                current?.runtimeId === "prompt-api" ? { ...current, contextUsage } : current,
+              );
+            }
+          }
           if (runtimeEvent.type === "output-diagnostics") {
             pendingOutputDiagnostics = runtimeEvent.diagnostics;
+          }
+          if (runtimeEvent.type === "warning") {
+            pendingWarnings = [...(pendingWarnings ?? []), runtimeEvent.warning];
           }
           scheduleAssistantUpdate();
         },
@@ -535,13 +768,26 @@ export default function ChatWorkbench() {
         setStatus("Generation stopped. The partial response remains visible.");
       } else {
         setError(failureMessage(failure));
-        setStatus("wllama generation failed.");
+        setStatus(`${runtime.descriptor.displayName} generation failed.`);
       }
+      const failureDetails = generationFailure(failure, controller.signal.aborted);
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId ? { ...message, failure: failureDetails } : message,
+        ),
+      );
     } finally {
       if (generationController.current === controller) generationController.current = undefined;
       setGenerating(false);
     }
   };
+
+  const promptApiSelectable =
+    promptApiProbe?.verdict === "supported" || promptApiProbe?.verdict === "degraded";
+  const activeView = runtimeViews[runtimeId];
+  const activeDescriptor = activeView.descriptor;
+  const activeModelName =
+    runtimeId === "wllama" ? (selectedModel?.displayName ?? "model") : "Gemini Nano";
 
   return (
     <div className="chat-workbench">
@@ -552,7 +798,7 @@ export default function ChatWorkbench() {
         <div className="model-alert" role="alert">
           <TriangleAlert aria-hidden="true" />
           <div>
-            <strong>wllama operation failed</strong>
+            <strong>{activeDescriptor.displayName} operation failed</strong>
             <p>{error}</p>
           </div>
         </div>
@@ -565,131 +811,223 @@ export default function ChatWorkbench() {
           </div>
           <div>
             <p className="eyebrow">Runtime adapter</p>
-            <h2 id="runtime-settings-title">wllama session</h2>
-            <p className="field-help">{wllamaDescriptor.engineVersion}</p>
+            <h2 id="runtime-settings-title">{activeDescriptor.displayName} session</h2>
+            <p className="field-help">{activeDescriptor.engineVersion}</p>
           </div>
 
-          <label htmlFor="chat-model">Managed GGUF model</label>
-          <select
-            id="chat-model"
-            value={selectedModelId}
-            onChange={(event) => changeModel(event.target.value)}
-            disabled={loading || generating}
-          >
-            {models.length === 0 ? <option value="">No installed models</option> : null}
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {modelLabel(model)}
-              </option>
-            ))}
-          </select>
-
-          {selectedCompatibility?.status === "needs-split" ? (
-            <div className="chat-model-compatibility status-degraded">
-              <Scissors aria-hidden="true" />
-              <div>
-                <strong>Preparation required</strong>
-                <p>{selectedCompatibility.explanation}</p>
-              </div>
-            </div>
-          ) : selectedCompatibility?.status === "incompatible" ? (
-            <div className="chat-model-compatibility status-unsupported">
-              <TriangleAlert aria-hidden="true" />
-              <div>
-                <strong>Not compatible with wllama</strong>
-                <p>{selectedCompatibility.explanation}</p>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="runtime-axis-grid">
-            <label>
-              WASM threads
-              <input
-                type="number"
-                min="1"
-                max={hardwareThreadLimit}
-                value={threads}
-                onChange={(event) => setThreads(boundedInteger(event.target.value, 1, 1))}
-                disabled={selectedModel === undefined || loading || generating}
-              />
-            </label>
-            <label>
-              Context tokens
-              <input
-                type="number"
-                min="256"
-                step="256"
-                max={selectedContextLimit ?? maximumDeclaredContextTokens}
-                value={contextSize}
-                onChange={(event) => {
-                  contextModelId.current = selectedContextModelId;
-                  contextEdited.current = true;
-                  setContextSize(
-                    Math.min(
-                      selectedContextLimit ?? maximumDeclaredContextTokens,
-                      boundedInteger(event.target.value, 256, selectedContextLimit ?? 2048),
-                    ),
-                  );
-                }}
-                disabled={selectedModel === undefined || loading || generating}
-              />
-              <span className="field-help">
-                {selectedContextLimit === undefined
-                  ? "No model-declared maximum; using a 2,048-token fallback. Type an exact value or use 256-token steps."
-                  : `Model-declared maximum: ${selectedContextLimit.toLocaleString()}. Type an exact value or use 256-token steps. Large contexts can require substantial browser memory.`}
-              </span>
-            </label>
-          </div>
-
-          <fieldset disabled={loading || generating}>
-            <legend>WebGPU layer offload</legend>
+          <fieldset className="runtime-choice-grid" disabled={loading || generating}>
+            <legend>Runtime</legend>
             <label>
               <input
                 type="radio"
-                name="gpu-offload"
-                checked={gpuMode === "full"}
-                onChange={() => setGpuMode("full")}
+                name="chat-runtime"
+                checked={runtimeId === "wllama"}
+                onChange={() => changeRuntime("wllama")}
               />
-              Full (wllama default)
+              wllama · managed GGUF
             </label>
             <label>
               <input
                 type="radio"
-                name="gpu-offload"
-                checked={gpuMode === "partial"}
-                onChange={() => setGpuMode("partial")}
+                name="chat-runtime"
+                aria-describedby="prompt-api-gate-reason"
+                checked={runtimeId === "prompt-api"}
+                disabled={!promptApiSelectable}
+                onChange={() => changeRuntime("prompt-api")}
               />
-              Partial
-            </label>
-            {gpuMode === "partial" ? (
-              <label>
-                GPU layers
-                <input
-                  type="number"
-                  min="1"
-                  value={gpuLayers}
-                  onChange={(event) => setGpuLayers(boundedInteger(event.target.value, 1, 1))}
-                />
-              </label>
-            ) : null}
-            <label>
-              <input
-                type="radio"
-                name="gpu-offload"
-                checked={gpuMode === "off"}
-                onChange={() => setGpuMode("off")}
-              />
-              CPU only
+              Chrome Prompt API · Gemini Nano
             </label>
           </fieldset>
+
+          <div
+            id="prompt-api-gate-reason"
+            className={`runtime-capability status-${promptApiProbe?.verdict ?? "unknown"}`}
+          >
+            {promptApiProbe?.verdict === "supported" ? (
+              <CircleCheck aria-hidden="true" />
+            ) : promptApiProbe?.verdict === "degraded" ? (
+              <TriangleAlert aria-hidden="true" />
+            ) : promptApiProbe?.verdict === "unsupported" ? (
+              <CircleX aria-hidden="true" />
+            ) : (
+              <CircleHelp aria-hidden="true" />
+            )}
+            <div>
+              <strong>
+                {promptApiProbe === undefined
+                  ? "Checking Gemini Nano"
+                  : promptApiProbe.verdict === "unknown"
+                    ? "Gemini Nano status unknown"
+                    : promptApiProbe.availability === "available"
+                      ? "Gemini Nano ready"
+                      : promptApiProbe.availability === "downloadable"
+                        ? "Gemini Nano download required"
+                        : promptApiProbe.availability === "downloading"
+                          ? "Gemini Nano downloading"
+                          : "Gemini Nano unavailable"}
+              </strong>
+              <p>
+                {promptApiProbe?.explanation ??
+                  "Checking this browser's window-only LanguageModel surface and model availability."}
+              </p>
+              {promptApiProbe !== undefined && !promptApiSelectable ? (
+                <Button
+                  onClick={() => refreshPromptApiProbe()}
+                  disabled={promptProbing}
+                  aria-busy={promptProbing}
+                >
+                  {promptApiProbe.verdict === "unknown"
+                    ? "Retry availability check"
+                    : "Refresh availability"}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+
+          {runtimeId === "wllama" ? (
+            <>
+              <label htmlFor="chat-model">Managed GGUF model</label>
+              <select
+                id="chat-model"
+                value={selectedModelId}
+                onChange={(event) => changeModel(event.target.value)}
+                disabled={loading || generating}
+              >
+                {models.length === 0 ? <option value="">No installed models</option> : null}
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {modelLabel(model)}
+                  </option>
+                ))}
+              </select>
+
+              {selectedCompatibility?.status === "needs-split" ? (
+                <div className="chat-model-compatibility status-degraded">
+                  <Scissors aria-hidden="true" />
+                  <div>
+                    <strong>Preparation required</strong>
+                    <p>{selectedCompatibility.explanation}</p>
+                  </div>
+                </div>
+              ) : selectedCompatibility?.status === "incompatible" ? (
+                <div className="chat-model-compatibility status-unsupported">
+                  <TriangleAlert aria-hidden="true" />
+                  <div>
+                    <strong>Not compatible with wllama</strong>
+                    <p>{selectedCompatibility.explanation}</p>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="runtime-axis-grid">
+                <label>
+                  WASM threads
+                  <input
+                    type="number"
+                    min="1"
+                    max={hardwareThreadLimit}
+                    value={threads}
+                    onChange={(event) => setThreads(boundedInteger(event.target.value, 1, 1))}
+                    disabled={selectedModel === undefined || loading || generating}
+                  />
+                </label>
+                <label>
+                  Context tokens
+                  <input
+                    type="number"
+                    min="256"
+                    step="256"
+                    max={selectedContextLimit ?? maximumDeclaredContextTokens}
+                    value={contextSize}
+                    onChange={(event) => {
+                      contextModelId.current = selectedContextModelId;
+                      contextEdited.current = true;
+                      setContextSize(
+                        Math.min(
+                          selectedContextLimit ?? maximumDeclaredContextTokens,
+                          boundedInteger(event.target.value, 256, selectedContextLimit ?? 2048),
+                        ),
+                      );
+                    }}
+                    disabled={selectedModel === undefined || loading || generating}
+                  />
+                  <span className="field-help">
+                    {selectedContextLimit === undefined
+                      ? "No model-declared maximum; using a 2,048-token fallback. Type an exact value or use 256-token steps."
+                      : `Model-declared maximum: ${selectedContextLimit.toLocaleString()}. Type an exact value or use 256-token steps. Large contexts can require substantial browser memory.`}
+                  </span>
+                </label>
+              </div>
+
+              <fieldset disabled={loading || generating}>
+                <legend>WebGPU layer offload</legend>
+                <label>
+                  <input
+                    type="radio"
+                    name="gpu-offload"
+                    checked={gpuMode === "full"}
+                    onChange={() => setGpuMode("full")}
+                  />
+                  Full (wllama default)
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="gpu-offload"
+                    checked={gpuMode === "partial"}
+                    onChange={() => setGpuMode("partial")}
+                  />
+                  Partial
+                </label>
+                {gpuMode === "partial" ? (
+                  <label>
+                    GPU layers
+                    <input
+                      type="number"
+                      min="1"
+                      value={gpuLayers}
+                      onChange={(event) => setGpuLayers(boundedInteger(event.target.value, 1, 1))}
+                    />
+                  </label>
+                ) : null}
+                <label>
+                  <input
+                    type="radio"
+                    name="gpu-offload"
+                    checked={gpuMode === "off"}
+                    onChange={() => setGpuMode("off")}
+                  />
+                  CPU only
+                </label>
+              </fieldset>
+            </>
+          ) : (
+            <>
+              <label htmlFor="chat-browser-model">Browser-managed model</label>
+              <select id="chat-browser-model" value="gemini-nano" disabled>
+                <option value="gemini-nano">Gemini Nano · managed by Chrome</option>
+              </select>
+              <div className="runtime-capability status-degraded">
+                <TriangleAlert aria-hidden="true" />
+                <div>
+                  <strong>Browser-managed session parameters</strong>
+                  <p>
+                    Stable web pages do not expose sampling controls or backend selection. Chrome
+                    chooses them; the session reports only its effective context usage and window.
+                  </p>
+                </div>
+              </div>
+            </>
+          )}
 
           <Button
             variant="primary"
             onClick={() => void load()}
             disabled={
-              selectedModel === undefined ||
-              selectedCompatibility?.status === "incompatible" ||
+              (runtimeId === "wllama" &&
+                (selectedModel === undefined ||
+                  selectedCompatibility?.status === "incompatible")) ||
+              (runtimeId === "prompt-api" && !promptApiSelectable) ||
               loading ||
               generating
             }
@@ -698,17 +1036,31 @@ export default function ChatWorkbench() {
             <Play aria-hidden="true" />
             {loading
               ? "Loading model"
-              : selectedCompatibility?.status === "needs-split"
-                ? "Prepare and load model"
-                : session === undefined
-                  ? "Load model"
-                  : "Reload session"}
+              : runtimeId === "prompt-api"
+                ? session === undefined
+                  ? promptApiProbe?.availability === "downloadable" ||
+                    promptApiProbe?.availability === "downloading"
+                    ? "Download and load Gemini Nano"
+                    : "Load Gemini Nano"
+                  : "Reload Gemini Nano session"
+                : selectedCompatibility?.status === "needs-split"
+                  ? "Prepare and load model"
+                  : session === undefined
+                    ? "Load model"
+                    : "Reload session"}
           </Button>
 
           {!splittingModel || selectedModel === undefined ? null : (
             <Button onClick={() => modelClient.current?.pause(selectedModel.id)}>
               <Pause aria-hidden="true" />
               Stop model preparation
+            </Button>
+          )}
+
+          {runtimeId !== "prompt-api" || !loading ? null : (
+            <Button onClick={() => void promptApiAdapter.current?.dispose()}>
+              <Square aria-hidden="true" />
+              Stop Gemini Nano loading
             </Button>
           )}
 
@@ -719,12 +1071,10 @@ export default function ChatWorkbench() {
                 {loadProgress.detail} · {formatDuration(loadElapsedMs)} elapsed
               </p>
               {loadProgress.completed === undefined || loadProgress.total === undefined ? (
-                <progress
-                  aria-label={`${loadProgress.label} for ${selectedModel?.displayName ?? "model"}`}
-                />
+                <progress aria-label={`${loadProgress.label} for ${activeModelName}`} />
               ) : (
                 <progress
-                  aria-label={`${loadProgress.label} for ${selectedModel?.displayName ?? "model"}`}
+                  aria-label={`${loadProgress.label} for ${activeModelName}`}
                   max={loadProgress.total}
                   value={loadProgress.completed}
                 />
@@ -732,7 +1082,7 @@ export default function ChatWorkbench() {
             </div>
           )}
 
-          {session === undefined ? null : (
+          {session === undefined ? null : session.runtimeId === "wllama" ? (
             <dl className="session-metrics">
               <div>
                 <dt>Model load</dt>
@@ -747,15 +1097,32 @@ export default function ChatWorkbench() {
                 <dd>{session.backend.gpuLayers === 99_999 ? "All" : session.backend.gpuLayers}</dd>
               </div>
             </dl>
+          ) : (
+            <dl className="session-metrics">
+              <div>
+                <dt>Session load</dt>
+                <dd>{formatDuration(session.loadTimeMs)}</dd>
+              </div>
+              <div>
+                <dt>Context used</dt>
+                <dd>{session.contextUsage.toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Context window</dt>
+                <dd>{session.contextWindow.toLocaleString()}</dd>
+              </div>
+            </dl>
           )}
 
-          <div className="runtime-capability status-unsupported">
-            <TriangleAlert aria-hidden="true" />
-            <div>
-              <strong>MTP unavailable</strong>
-              <p>{wllamaDescriptor.mtp.explanation}</p>
+          {runtimeId === "wllama" ? (
+            <div className="runtime-capability status-unsupported">
+              <TriangleAlert aria-hidden="true" />
+              <div>
+                <strong>MTP unavailable</strong>
+                <p>{wllamaDescriptor.mtp.explanation}</p>
+              </div>
             </div>
-          </div>
+          ) : null}
         </aside>
 
         <section className="chat-panel" aria-labelledby="chat-stream-title" aria-busy={loading}>
@@ -789,14 +1156,11 @@ export default function ChatWorkbench() {
                       ? "Load a model to begin"
                       : "Send the first measured prompt"}
                 </h3>
-                <p>
-                  {loading
-                    ? "The session will become ready after wllama finishes loading the local weights."
-                    : "Each assistant response reports load time, TTFT, prefill, and decode throughput."}
-                </p>
+                <p>{loading ? activeView.loadingHelp : activeView.readyHelp}</p>
               </div>
             ) : (
               messages.map((message) => {
+                const messageView = runtimeViews[message.runtimeId];
                 const intermediateChannels =
                   message.channels?.filter((channel) => !channel.final) ?? [];
                 const missingFinalResponse =
@@ -812,7 +1176,9 @@ export default function ChatWorkbench() {
                       ) : (
                         <Bot aria-hidden="true" />
                       )}
-                      <strong>{message.role === "user" ? "You" : "wllama"}</strong>
+                      <strong>
+                        {message.role === "user" ? "You" : messageView.descriptor.displayName}
+                      </strong>
                     </div>
                     {intermediateChannels.length === 0 ? null : (
                       <div className="response-channels">
@@ -828,9 +1194,26 @@ export default function ChatWorkbench() {
                             ? "Generating…"
                             : ""
                           : missingFinalResponse
-                            ? "The model stopped without producing a final channel. Expand the completed channels above to inspect its output."
-                            : "")}
+                            ? messageView.emptyResponse
+                            : message.failure?.code === "aborted"
+                              ? "Generation stopped before the runtime returned text."
+                              : message.failure !== undefined
+                                ? "The runtime stopped without returning text."
+                                : "")}
                     </p>
+                    {message.warnings?.map((warning, index) => (
+                      <p key={`${warning.code}-${index}`} className="chat-message-warning">
+                        <TriangleAlert aria-hidden="true" /> {warning.message}
+                      </p>
+                    ))}
+                    {message.failure === undefined ? null : (
+                      <p className="chat-message-failure">
+                        {message.failure.code === "aborted"
+                          ? "Stopped response"
+                          : "Response failed"}
+                        {message.content.length > 0 ? ". Partial output remains visible." : "."}
+                      </p>
+                    )}
                     {message.outputDiagnostics === undefined ? null : (
                       <OutputDiagnosticsDetails diagnostics={message.outputDiagnostics} />
                     )}
@@ -841,28 +1224,42 @@ export default function ChatWorkbench() {
                           <dd>{formatDuration(message.metrics.loadTimeMs)}</dd>
                         </div>
                         <div>
-                          <dt>TTFT</dt>
-                          <dd>{formatDuration(message.metrics.timeToFirstTokenMs)}</dd>
+                          <dt>{messageView.firstOutputLabel}</dt>
+                          <dd>{formatDuration(messageView.firstOutputMetric(message.metrics))}</dd>
                         </div>
-                        <div>
-                          <dt>Prefill</dt>
-                          <dd>{formatRate(message.metrics.prefillTokensPerSecond)}</dd>
-                        </div>
-                        <div>
-                          <dt>Decode</dt>
-                          <dd>{formatRate(message.metrics.decodeTokensPerSecond)}</dd>
-                        </div>
+                        {messageView.showsTokenMetrics ? (
+                          <>
+                            <div>
+                              <dt>Prefill</dt>
+                              <dd>{formatRate(message.metrics.prefillTokensPerSecond)}</dd>
+                            </div>
+                            <div>
+                              <dt>Decode</dt>
+                              <dd>{formatRate(message.metrics.decodeTokensPerSecond)}</dd>
+                            </div>
+                          </>
+                        ) : null}
                         <div>
                           <dt>End to end</dt>
                           <dd>{formatDuration(message.metrics.totalTimeMs)}</dd>
                         </div>
-                        <div>
-                          <dt>Tokens</dt>
-                          <dd>
-                            {message.metrics.promptTokens ?? "?"} in ·{" "}
-                            {message.metrics.completionTokens ?? "?"} out
-                          </dd>
-                        </div>
+                        {messageView.showsTokenMetrics ? (
+                          <div>
+                            <dt>Tokens</dt>
+                            <dd>
+                              {message.metrics.promptTokens ?? "?"} in ·{" "}
+                              {message.metrics.completionTokens ?? "?"} out
+                            </dd>
+                          </div>
+                        ) : (
+                          <div>
+                            <dt>Context</dt>
+                            <dd>
+                              {message.metrics.contextUsage?.toLocaleString() ?? "?"} /{" "}
+                              {message.metrics.contextWindow?.toLocaleString() ?? "?"}
+                            </dd>
+                          </div>
+                        )}
                       </dl>
                     )}
                   </article>
@@ -878,12 +1275,14 @@ export default function ChatWorkbench() {
               rows={3}
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              placeholder={session === undefined ? "Load a model first" : "Ask the local model…"}
+              placeholder={
+                session === undefined ? "Load a model first" : activeView.composerPlaceholder
+              }
               disabled={session === undefined || generating}
             />
             <div className="chat-composer-actions">
               <p>
-                <Gauge aria-hidden="true" /> Metrics use wllama timings and page-observed TTFT.
+                <Gauge aria-hidden="true" /> {activeView.metricsHelp}
               </p>
               <Button
                 variant="primary"

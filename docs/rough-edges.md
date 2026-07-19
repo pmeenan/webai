@@ -25,6 +25,26 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-024: Prompt API presence does not imply a usable browser-managed model  (2026-07-19, status: worked-around)
+
+**Environment:** Stable Google Chrome 150.0.7871.128 on Linux, a fresh headless
+Playwright profile, and a secure top-level page. **Repro or measurement:** Inspect own
+properties on `LanguageModel` and its prototype, then call `availability()` with
+English text in both `expectedInputs` and `expectedOutputs`. **Observed:** The global
+existed and its only own static operations were `availability` and `create`, but the
+probe returned `unavailable`. The session prototype used current
+`contextUsage`/`contextWindow` names and exposed no legacy usage/quota aliases or
+sampling parameters. **Expected:** API presence proves only that the entry point
+exists; Chrome's documented hardware, storage, profile, policy, and model state still
+determine whether the requested session can run. **Impact on WebAI:** Runtime gating
+uses the asynchronous availability result as volatile evidence and keeps unavailable
+or failed states distinct. Automated chat coverage injects a deterministic fake for
+download/session behavior, while the real-browser capability test accepts
+`unavailable` as a valid measured result. WebAI exposes no stable-web sampling
+controls and never UA-sniffs Chrome eligibility. **Links:** [Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api),
+[Chrome built-in AI requirements](https://developer.chrome.com/docs/ai/get-started#requirements),
+[D-030](decisions.md).
+
 ## RE-023: wllama leaves a terminal stream result for the next request  (2026-07-18, status: worked-around)
 
 **Environment:** `@wllama/wllama` 3.5.1 / bundled llama.cpp `b9640-dd4623a`,

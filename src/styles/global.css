@@ -1684,6 +1684,17 @@ button {
   background: var(--danger-soft);
 }
 
+.runtime-capability.status-supported {
+  border-color: var(--success);
+  background: var(--success-soft);
+}
+
+.runtime-capability.status-degraded,
+.runtime-capability.status-unknown {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+
 .runtime-capability > svg {
   width: var(--icon-default);
   flex: 0 0 auto;
@@ -1694,6 +1705,10 @@ button {
   color: var(--text-secondary);
   font-size: var(--font-size-xs);
   line-height: var(--line-sm);
+}
+
+.runtime-capability .button-secondary {
+  margin-block-start: var(--space-3);
 }
 
 .chat-load-progress {
@@ -1803,6 +1818,33 @@ button {
   line-height: var(--line-md);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.chat-message-warning,
+.chat-message-failure {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-3) var(--space-0) var(--space-0);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.chat-message-warning {
+  border: var(--border-width) solid var(--warning);
+  background: var(--warning-soft);
+}
+
+.chat-message-failure {
+  border: var(--border-width) solid var(--danger);
+  background: var(--danger-soft);
+}
+
+.chat-message-warning svg {
+  width: var(--icon-default);
+  flex: 0 0 auto;
 }
 
 .response-channels {

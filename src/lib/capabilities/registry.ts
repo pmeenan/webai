@@ -7,6 +7,7 @@ import type {
 import {
   requestStoragePersistence,
   runStablePageProbes,
+  runVolatilePromptApiProbe,
   runVolatileStorageProbes,
 } from "./page-probes";
 import { runCapabilityWorker } from "./worker-client";
@@ -35,6 +36,7 @@ export class CapabilityRegistry {
   #probing = false;
   #generation = 0;
   #storageGeneration = 0;
+  #promptGeneration = 0;
   #listeners = new Set<RegistryListener>();
   #visibilityWasHidden = false;
 
@@ -55,6 +57,7 @@ export class CapabilityRegistry {
   async refresh(trigger: "initial" | "explicit-refresh" = "explicit-refresh"): Promise<void> {
     const generation = ++this.#generation;
     const storageGeneration = ++this.#storageGeneration;
+    const promptGeneration = ++this.#promptGeneration;
     this.#probing = true;
     this.#snapshot = this.#markAllStale();
     this.#emit();
@@ -62,14 +65,18 @@ export class CapabilityRegistry {
       const stablePage = runStablePageProbes(trigger);
       this.#snapshot = mergeEvidence(this.#snapshot, stablePage);
       this.#emit();
-      const [worker, storage] = await Promise.all([
+      const [worker, storage, promptApi] = await Promise.all([
         runCapabilityWorker(trigger),
         runVolatileStorageProbes(trigger),
+        runVolatilePromptApiProbe(trigger),
       ]);
       if (generation !== this.#generation) return;
       this.#snapshot = Object.freeze({ ...this.#snapshot, ...worker });
       if (storageGeneration === this.#storageGeneration) {
         this.#snapshot = mergeEvidence(this.#snapshot, storage);
+      }
+      if (promptGeneration === this.#promptGeneration) {
+        this.#snapshot = mergeEvidence(this.#snapshot, [promptApi]);
       }
     } finally {
       if (generation === this.#generation) {
@@ -102,11 +109,35 @@ export class CapabilityRegistry {
         this.#visibilityWasHidden = true;
       } else if (this.#visibilityWasHidden) {
         this.#visibilityWasHidden = false;
-        void this.invalidateStorage("visibility-return");
+        void this.#invalidateVolatile();
       }
     };
     document.addEventListener("visibilitychange", listener);
     return () => document.removeEventListener("visibilitychange", listener);
+  }
+
+  async #invalidateVolatile(): Promise<void> {
+    const generation = ++this.#storageGeneration;
+    const promptGeneration = ++this.#promptGeneration;
+    this.#snapshot = this.#markStale([
+      "storage.estimate",
+      "storage.persisted",
+      "prompt-api.page.availability",
+    ]);
+    this.#emit();
+    const [storage, promptApi] = await Promise.all([
+      runVolatileStorageProbes("storage-invalidation"),
+      runVolatilePromptApiProbe("browser-model-invalidation"),
+    ]);
+    if (generation !== this.#storageGeneration && promptGeneration !== this.#promptGeneration)
+      return;
+    if (generation === this.#storageGeneration) {
+      this.#snapshot = mergeEvidence(this.#snapshot, storage);
+    }
+    if (promptGeneration === this.#promptGeneration) {
+      this.#snapshot = mergeEvidence(this.#snapshot, [promptApi]);
+    }
+    this.#emit();
   }
 
   #markAllStale(): CapabilitySnapshot {

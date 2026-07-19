@@ -4,7 +4,7 @@ Test LLMs *in your browser*. WebAI is a fully client-side workbench for discover
 downloading, and evaluating Hugging Face models across in-browser inference runtimes
 (wllama, transformers.js, and more) and execution backends (WASM on CPU, WebGPU,
 WebNN), alongside browser-managed models (Chrome's built-in Gemini Nano via the
-Prompt API) as a separate no-download path — so developers can pick the right model,
+Prompt API) as a separate browser-owned acquisition path — so developers can pick the right model,
 quantization, and library for their needs with real numbers from their own hardware.
 
 - **No server, no upload, no telemetry.** Models and results live in your browser
@@ -25,9 +25,10 @@ documentation, directed and reviewed by a human.
 
 ## Status
 
-**M0, M1, and M2 are complete; M3 is implemented locally and awaiting its live >2 GB
-exit check.** Verified acquisition, managed storage, bounded GGUF splitting, and the
-first measured wllama chat path are available — see [docs/plan.md](docs/plan.md).
+**M0, M1, M2, and M4 are complete; M3 is implemented locally and awaiting its live
+>2 GB exit check.** Verified acquisition, managed storage, bounded GGUF splitting, the
+measured wllama path, and a browser-verified Gemini Nano adapter are available — see
+[docs/plan.md](docs/plan.md).
 
 ## Develop
 

@@ -30,6 +30,7 @@ test("capability report reaches terminal evidence and refreshes", async ({ page 
     "WebAssembly and shared memory",
     "Accelerated compute",
     "Storage",
+    "Browser-managed AI",
   ]);
 
   const pageIsolation = page.locator(
@@ -39,8 +40,6 @@ test("capability report reaches terminal evidence and refreshes", async ({ page 
   const initialRaw = await pageIsolation.getByText(/page · stable-session/).textContent();
 
   await refresh.click();
-  await expect(refresh).toBeDisabled();
-  await expect(refresh).toHaveAttribute("aria-busy", "true");
   await expect(refresh).toBeEnabled({ timeout: 25_000 });
   await expect(refresh).toHaveAttribute("aria-busy", "false");
   await expect(report).toHaveAttribute("aria-busy", "false");

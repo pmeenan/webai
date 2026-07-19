@@ -260,15 +260,23 @@ MTP verdict: a controlled browser A/B result when usable, or the exact adapter/e
 gap and an honest unavailable state when it is not. MTP availability is not required
 for the base chat path.
 
-### M4 — Second runtime: Prompt API  `pending`
+### M4 — Second runtime: Prompt API  `done`
 
 Goal: prove the runtime adapter contract on the most divergent case — main-thread
 (D-007), browser-managed model, no HF download — before conventional runtimes
 calcify assumptions into it.
 
-- [ ] Prompt API adapter: availability probing, browser-managed download flow with
+- [x] Prompt API adapter: availability probing, browser-managed download flow with
       progress, session params it actually exposes (re-verify surface, root rule 4).
-- [ ] Runtime/model selection UI; unavailable runtimes disabled with the reason.
+- [x] Runtime/model selection UI; unavailable runtimes disabled with the reason.
+
+*(Core implementation landed locally 2026-07-19. D-030 records the current stable
+web surface, stateful adapter contract, synchronous user-activation boundary, and
+honest measurement limits. A deterministic browser fixture verifies unavailable,
+download, initialization, session, incremental two-turn streaming, context, and
+disposal paths; the real headless Chrome capability probe is also allowed to report
+its actual volatile state. The owner manually verified the supported interactive
+browser path and milestone exit criteria on 2026-07-19.)*
 
 **Exit criteria:** a user can switch the same chat surface between a downloaded
 GGUF-on-wllama and Gemini Nano, on a browser with the API; on other browsers the
