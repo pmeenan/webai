@@ -1,7 +1,13 @@
 /// <reference lib="webworker" />
 
-import { createIntegrityHasher, createSha256 } from "./hashing";
 import { inspectGgufBlob } from "./gguf";
+import { splitGgufFile, WllamaShardLimitError } from "./gguf-split";
+import {
+  ggufSplitMaxShardBytes,
+  ggufSplitThresholdBytes,
+  ggufSplitToolVersion,
+} from "./gguf-split-profile";
+import { createIntegrityHasher, createSha256 } from "./hashing";
 import {
   fetchWith429Backoff,
   resolveHuggingFaceModel,
@@ -9,14 +15,14 @@ import {
   validateRangeResponse,
 } from "./hugging-face";
 import {
-  modelWorkerProtocolVersion,
   type ModelWorkerEvent,
   type ModelWorkerRequest,
+  modelWorkerProtocolVersion,
 } from "./protocol";
 import {
-  discardAcquisitionJob,
-  deleteModel,
   DurableFileWriter,
+  deleteModel,
+  discardAcquisitionJob,
   getJob,
   getModel,
   getStoredFile,
@@ -24,6 +30,8 @@ import {
   promotePartialFile,
   putJob,
   reconcileModelInventory,
+  recordModelRuntimeIssue,
+  replaceModelFiles,
   updateModelInspections,
   withAcquisitionLock,
 } from "./storage";
@@ -807,6 +815,7 @@ async function attemptFinishImport(requestId: string, job: LocalImportJobRecord)
   try {
     await finishImportJob(requestId, job);
   } catch (error) {
+    if ((await getModel(job.id)) !== undefined) throw error;
     const retryable: LocalImportJobRecord = {
       ...job,
       state: "ready-to-install",
@@ -866,6 +875,97 @@ async function finishImportJob(requestId: string, job: LocalImportJobRecord): Pr
   });
   await installModel(model);
   post({ type: "model/complete", requestId, modelId: model.id });
+}
+
+function isCompanionFile(file: ModelFileRecord): boolean {
+  const name = file.displayName.toLowerCase();
+  return (
+    name.includes("mtp-") ||
+    name.includes("mmproj") ||
+    file.inspection?.architecture === "gemma4-assistant" ||
+    file.inspection?.architecture === "clip"
+  );
+}
+
+function monolithicSplitCandidate(model: InstalledModelRecord): ModelFileRecord | undefined {
+  const primary = model.files.filter((file) => !isCompanionFile(file));
+  if (primary.length !== 1) return undefined;
+  const file = primary[0];
+  if (file === undefined || /-\d{5}-of-\d{5}\.gguf$/iu.test(file.displayName)) return undefined;
+  return file;
+}
+
+async function splitInstalledModel(
+  requestId: string,
+  model: InstalledModelRecord,
+  signal: AbortSignal,
+): Promise<InstalledModelRecord> {
+  const sourceFile = monolithicSplitCandidate(model);
+  if (sourceFile === undefined) {
+    throw new ModelOperationError({
+      code: "unsupported",
+      phase: "split",
+      message: "This model is already sharded or does not contain one identifiable primary GGUF.",
+      retryable: false,
+    });
+  }
+  const source = await getStoredFile(sourceFile.opfsPath);
+  if (source === undefined || source.size !== sourceFile.size) {
+    throw new ModelOperationError({
+      code: "storage",
+      phase: "split",
+      message: "The monolithic GGUF bytes are missing or incomplete.",
+      retryable: true,
+    });
+  }
+  let result: Awaited<ReturnType<typeof splitGgufFile>>;
+  try {
+    result = await splitGgufFile(
+      source,
+      sourceFile.displayName,
+      `partials/split-${model.id}-${Date.now().toString(36)}`,
+      signal,
+      (completedBytes, totalBytes_, splitStage) =>
+        post({
+          type: "model/progress",
+          requestId,
+          jobId: model.id,
+          phase: "splitting",
+          splitStage,
+          completedBytes,
+          totalBytes: totalBytes_,
+          currentFile: sourceFile.displayName,
+        }),
+    );
+  } catch (error) {
+    if (error instanceof WllamaShardLimitError) {
+      await recordModelRuntimeIssue(model.id, {
+        runtimeId: "wllama",
+        reasonCode: "minimum-shard-size",
+        message: error.failure.message,
+        measuredAt: new Date().toISOString(),
+        limitBytes: ggufSplitThresholdBytes,
+        requiredShardBytes: error.requiredShardBytes,
+        splitterVersion: ggufSplitToolVersion,
+      });
+    }
+    throw error;
+  }
+  if (result.sourceSha256 !== sourceFile.sha256) {
+    throw new ModelOperationError({
+      code: "integrity-mismatch",
+      phase: "split",
+      message: "The stored source changed while GGUF shards were being generated.",
+      retryable: false,
+    });
+  }
+  return await replaceModelFiles(model.id, sourceFile, result.files, {
+    kind: "gguf-split",
+    sourceBlobId: sourceFile.blobId,
+    sourceSha256: sourceFile.sha256,
+    toolVersion: ggufSplitToolVersion,
+    maxShardBytes: ggufSplitMaxShardBytes,
+  });
 }
 
 async function reinspectModel(requestId: string, modelId: string): Promise<void> {
@@ -1026,6 +1126,30 @@ scope.addEventListener("message", (message: MessageEvent<unknown>) => {
           await reinspectModel(requestId, request.modelId);
           break;
         }
+        case "model/split": {
+          if (typeof request.modelId !== "string") throw new Error("invalid request");
+          const modelId = request.modelId;
+          const controller = new AbortController();
+          operations.set(modelId, controller);
+          try {
+            await withAcquisitionLock(async () => {
+              const model = await getModel(modelId);
+              if (model === undefined) {
+                throw new ModelOperationError({
+                  code: "input-invalid",
+                  phase: "split",
+                  message: "The installed model no longer exists.",
+                  retryable: false,
+                });
+              }
+              await splitInstalledModel(requestId, model, controller.signal);
+            }, controller.signal);
+          } finally {
+            if (operations.get(modelId) === controller) operations.delete(modelId);
+          }
+          post({ type: "model/complete", requestId, modelId });
+          break;
+        }
         default:
           throw new Error("invalid request");
       }
@@ -1039,7 +1163,9 @@ scope.addEventListener("message", (message: MessageEvent<unknown>) => {
             ? "resolve"
             : request.type === "model/import"
               ? "import"
-              : "storage",
+              : request.type === "model/split"
+                ? "split"
+                : "storage",
         ),
       });
     }

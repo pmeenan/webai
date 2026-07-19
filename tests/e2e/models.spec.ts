@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { ggufSplitToolVersion } from "../../src/lib/models/gguf-split-profile";
 
 const commit = "b".repeat(40);
 
@@ -29,10 +30,11 @@ function ggufFixture(size?: number, name = "Playwright fixture"): Buffer {
     Buffer.from("GGUF"),
     u32(3),
     u64(0),
-    u64(3),
+    u64(4),
     ggufEntry("general.architecture", 8, ggufString("llama")),
     ggufEntry("general.name", 8, ggufString(name)),
     ggufEntry("general.file_type", 4, u32(15)),
+    ggufEntry("llama.context_length", 4, u32(131_072)),
   ]);
   if (size === undefined) return header;
   const fixture = Buffer.alloc(size);
@@ -149,6 +151,10 @@ test("resumes a durable range after a page and worker restart, then inspects the
   await expect(installed).toContainText("fixture/model · Q4_K_M");
   await expect(installed.getByText("installed", { exact: true })).toBeVisible();
   await installed.getByText("Inspect files and metadata").click();
+  const inspectedFile = installed.locator("details.model-file-inspection");
+  await expect(inspectedFile.getByText("Name: Playwright fixture")).toBeVisible();
+  await expect(installed.getByRole("rowheader", { name: "general.architecture" })).toBeHidden();
+  await inspectedFile.locator("summary").click();
   await expect(installed.getByRole("rowheader", { name: "general.architecture" })).toBeVisible();
   await expect(installed.getByRole("cell", { name: "llama" })).toBeVisible();
   expect(starts[0]).toBe(0);
@@ -302,7 +308,11 @@ test("offers llama.cpp's same-directory MTP companion without listing sidecars a
   await expect(installed).toContainText("2 files");
   await installed.getByText("Inspect files and metadata").click();
   await expect(installed).toContainText("MTP fixture");
-  await expect(installed).toContainText("Role: MTP speculative-decoding companion");
+  const mtpFile = installed
+    .locator("details.model-file-inspection")
+    .filter({ hasText: "mtp-model-Q4_0.gguf" });
+  await mtpFile.locator("summary").click();
+  await expect(mtpFile).toContainText("Role: MTP speculative-decoding companion");
   expect(downloaded).toEqual(["model-Q4_K_XL.gguf", "mtp-model-Q4_0.gguf"]);
 });
 
@@ -329,8 +339,12 @@ test("imports and deletes a local GGUF without network traffic", async ({ page }
   });
   const installed = page.locator("[data-model-id]");
   await expect(installed).toContainText("local-Q4_K_M.gguf");
+  await expect(installed).toContainText("Trained context");
+  await expect(installed).toContainText("131,072 tokens");
   await installed.getByText("Inspect files and metadata").click();
-  await expect(installed).toContainText("Playwright fixture");
+  const inspectedFile = installed.locator("details.model-file-inspection");
+  await expect(inspectedFile).toContainText("Name: Playwright fixture");
+  await expect(inspectedFile.locator("table")).toBeHidden();
   await installed.getByRole("button", { name: "Delete model" }).click();
   await installed.getByRole("button", { name: "Confirm delete" }).click();
   await expect(installed).toHaveCount(0);
@@ -352,8 +366,59 @@ test("installs integrity-checked local bytes when metadata inspection is unavail
   await expect(installed).toContainText("hostile.gguf");
   await expect(installed).toContainText("Metadata unavailable");
   await installed.getByText("Inspect files and metadata").click();
-  await expect(installed).toContainText("does not start with the GGUF magic bytes");
-  await expect(installed).toContainText("The verified model bytes remain installed");
+  const inspectedFile = installed.locator("details.model-file-inspection");
+  await inspectedFile.locator("summary").click();
+  await expect(inspectedFile).toContainText("does not start with the GGUF magic bytes");
+  await expect(inspectedFile).toContainText("The verified model bytes remain installed");
+});
+
+test("persists a measured wllama shard-limit warning on the model card", async ({ page }) => {
+  await page.goto("./models/");
+  await expect(page.getByText("No managed models yet")).toBeVisible();
+  await page.getByLabel("Choose GGUF files").setInputFiles({
+    name: "unsplittable.gguf",
+    mimeType: "application/octet-stream",
+    buffer: ggufFixture(),
+  });
+  await expect(page.locator("[data-model-id]")).toContainText("unsplittable.gguf");
+  await page.evaluate(async (splitterVersion) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("webai-v1");
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const transaction = database.transaction("models", "readwrite");
+    const store = transaction.objectStore("models");
+    const model = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const request = store.getAll();
+      request.addEventListener("success", () => resolve(request.result[0]), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    store.put({
+      ...model,
+      runtimeIssues: [
+        {
+          runtimeId: "wllama",
+          reasonCode: "minimum-shard-size",
+          message: "Measured minimum shard is 2.1 GB, above wllama's file limit.",
+          measuredAt: "2026-07-18T00:00:00.000Z",
+          limitBytes: 2_000_000_000,
+          requiredShardBytes: 2_100_000_000,
+          splitterVersion,
+        },
+      ],
+    });
+    await new Promise<void>((resolve, reject) => {
+      transaction.addEventListener("complete", () => resolve(), { once: true });
+      transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    });
+    database.close();
+  }, ggufSplitToolVersion);
+  await page.reload();
+  const installed = page.locator("[data-model-id]");
+  await expect(installed.getByText("Not compatible with wllama")).toBeVisible();
+  await expect(installed).toContainText("Measured minimum shard is 2.1 GB");
+  await expect(installed.getByRole("button", { name: /Split|Prepare/u })).toHaveCount(0);
 });
 
 test("re-runs metadata extraction from installed OPFS bytes without a source or network", async ({

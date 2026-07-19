@@ -7,12 +7,14 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Scissors,
   ShieldCheck,
   Trash2,
   TriangleAlert,
   Upload,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
+import { type DragEvent, useCallback, useEffect, useRef, useState } from "react";
+import { ggufSplitMaxShardBytes } from "../lib/models/gguf-split-profile";
 import type { ModelWorkerEvent } from "../lib/models/protocol";
 import { requestStoragePersistence } from "../lib/models/storage";
 import type {
@@ -24,11 +26,17 @@ import type {
   ResolvedHuggingFaceRepository,
 } from "../lib/models/types";
 import { ModelWorkerClient } from "../lib/models/worker-client";
+import {
+  wllamaModelCompatibility,
+  wllamaModelContextLength,
+  wllamaPrimaryFiles,
+} from "../lib/runtimes/wllama-compatibility";
 import Button from "./ui/button";
 
 interface LiveProgress {
   readonly jobId: string;
-  readonly phase: "downloading" | "verifying" | "importing";
+  readonly phase: "downloading" | "verifying" | "importing" | "splitting";
+  readonly splitStage?: "planning" | "hashing" | "copying" | "finalizing";
   readonly completedBytes: number;
   readonly totalBytes: number;
   readonly currentFile: string;
@@ -76,6 +84,28 @@ function managedFileRole(displayName: string): string {
   return "Primary model weights";
 }
 
+function progressStatus(progress: LiveProgress): string {
+  if (progress.phase === "splitting") {
+    if (progress.splitStage === "planning") {
+      return `Reading GGUF metadata and planning shard boundaries for ${progress.currentFile}.`;
+    }
+    const action =
+      progress.splitStage === "hashing"
+        ? "Checking source integrity"
+        : progress.splitStage === "finalizing"
+          ? "Finalizing shards and inspecting metadata"
+          : "Writing shards";
+    return `${action} for ${progress.currentFile}.`;
+  }
+  const action =
+    progress.phase === "verifying"
+      ? "Verifying"
+      : progress.phase === "importing"
+        ? "Importing"
+        : "Downloading";
+  return `${action} ${progress.currentFile}: ${formatBytes(progress.completedBytes)} of ${formatBytes(progress.totalBytes)}.`;
+}
+
 function JobCard({
   job,
   progress,
@@ -113,6 +143,16 @@ function JobCard({
       : "path" in currentSource
         ? currentSource.path
         : currentSource.name;
+  const splitPlanning = progress?.phase === "splitting" && progress.splitStage === "planning";
+  const splitFinalizing = progress?.phase === "splitting" && progress.splitStage === "finalizing";
+  const progressCopy =
+    progress?.phase === "splitting"
+      ? progress.splitStage === "planning"
+        ? `Reading GGUF metadata and planning shard boundaries for ${progress.currentFile}. Copying starts when the layout is ready.`
+        : progress.splitStage === "finalizing"
+          ? `Finalizing shards and inspecting metadata for ${progress.currentFile}.`
+          : `${progress.splitStage === "hashing" ? "Checking source integrity" : "Writing GGUF shards"}: ${formatBytes(completed)} of ${formatBytes(total)} read/write work · ${progress.currentFile}`
+      : `${formatBytes(completed)} of ${formatBytes(total)} durable · ${progress?.currentFile ?? currentFile}`;
   return (
     <article className="model-card model-job-card" data-job-id={job.id}>
       <div className="model-card-heading">
@@ -133,16 +173,29 @@ function JobCard({
           {active ? (progress?.phase ?? job.state) : job.state}
         </span>
       </div>
-      <p className="model-progress-copy">
-        {formatBytes(completed)} of {formatBytes(total)} durable ·{" "}
-        {progress?.currentFile ?? currentFile}
+      <p className="model-progress-copy">{progressCopy}</p>
+      {splitPlanning || splitFinalizing ? (
+        <progress
+          aria-label={
+            splitPlanning
+              ? `Planning GGUF shards for ${job.displayName}`
+              : `Finalizing GGUF shards for ${job.displayName}`
+          }
+        />
+      ) : (
+        <progress
+          max={total}
+          value={completed}
+          aria-label={`Acquisition progress for ${job.displayName}`}
+        />
+      )}
+      <p className="model-progress-percent">
+        {splitPlanning || splitFinalizing
+          ? splitPlanning
+            ? "Planning shard layout…"
+            : "Finalizing and inspecting…"
+          : `${progressPercent(completed, total).toFixed(1)}%`}
       </p>
-      <progress
-        max={total}
-        value={completed}
-        aria-label={`Acquisition progress for ${job.displayName}`}
-      />
-      <p className="model-progress-percent">{progressPercent(completed, total).toFixed(1)}%</p>
       {job.error === undefined ? null : (
         <p className="inline-error">
           <TriangleAlert aria-hidden="true" />
@@ -187,24 +240,42 @@ function ModelCard({
   model,
   deleting,
   inspecting,
+  splitting,
+  splitProgress,
   blocked,
   confirmDelete,
   onAskDelete,
   onCancelDelete,
   onDelete,
   onInspect,
+  onSplit,
+  onStopSplit,
 }: {
   readonly model: InstalledModelRecord;
   readonly deleting: boolean;
   readonly inspecting: boolean;
+  readonly splitting: boolean;
+  readonly splitProgress?: LiveProgress | undefined;
   readonly blocked: boolean;
   readonly confirmDelete: boolean;
   readonly onAskDelete: () => void;
   readonly onCancelDelete: () => void;
   readonly onDelete: () => void;
   readonly onInspect: () => void;
+  readonly onSplit: () => void;
+  readonly onStopSplit: () => void;
 }) {
   const inspection = model.files[0]?.inspection;
+  const primaryFiles = wllamaPrimaryFiles(model);
+  const contextLength = wllamaModelContextLength(model);
+  const compatibility = wllamaModelCompatibility(model);
+  const canSplit =
+    model.state === "installed" &&
+    compatibility.status !== "incompatible" &&
+    model.derivation === undefined &&
+    primaryFiles.length === 1 &&
+    (primaryFiles[0]?.size ?? 0) > ggufSplitMaxShardBytes &&
+    !/-\d{5}-of-\d{5}\.gguf$/iu.test(primaryFiles[0]?.displayName ?? "");
   return (
     <article className="model-card" data-model-id={model.id}>
       <div className="model-card-heading">
@@ -227,6 +298,64 @@ function ModelCard({
         </span>
       </div>
       <p className="model-source">{sourceDescription(model)}</p>
+      {model.derivation?.kind === "gguf-split" ? (
+        <p className="model-file-role">
+          Split in-browser into {model.files.length} managed files with{" "}
+          {model.derivation.toolVersion}.
+        </p>
+      ) : null}
+      {compatibility.status === "needs-split" ? (
+        <div className="model-compatibility status-degraded">
+          <Scissors aria-hidden="true" />
+          <div>
+            <strong>Preparation required for wllama</strong>
+            <p>{compatibility.explanation}</p>
+          </div>
+        </div>
+      ) : compatibility.status === "incompatible" ? (
+        <div className="model-compatibility status-unsupported">
+          <TriangleAlert aria-hidden="true" />
+          <div>
+            <strong>Not compatible with wllama</strong>
+            <p>{compatibility.explanation}</p>
+          </div>
+        </div>
+      ) : null}
+      {splitProgress === undefined ? null : (
+        <div className="model-split-progress">
+          {splitProgress.splitStage === "planning" || splitProgress.splitStage === "finalizing" ? (
+            <>
+              <p>
+                {splitProgress.splitStage === "planning"
+                  ? `Reading GGUF metadata and planning shard boundaries for ${splitProgress.currentFile}. Copying starts when the layout is ready.`
+                  : `Finalizing shards and inspecting metadata for ${splitProgress.currentFile}.`}
+              </p>
+              <progress
+                aria-label={
+                  splitProgress.splitStage === "planning"
+                    ? `Planning GGUF shards for ${model.displayName}`
+                    : `Finalizing GGUF shards for ${model.displayName}`
+                }
+              />
+            </>
+          ) : (
+            <>
+              <p>
+                {splitProgress.splitStage === "hashing"
+                  ? "Checking source integrity before writing shards"
+                  : "Writing GGUF shards"}
+                : {formatBytes(splitProgress.completedBytes)} of{" "}
+                {formatBytes(splitProgress.totalBytes)} read/write work
+              </p>
+              <progress
+                max={splitProgress.totalBytes}
+                value={splitProgress.completedBytes}
+                aria-label={`Split progress for ${model.displayName}`}
+              />
+            </>
+          )}
+        </div>
+      )}
       <dl className="model-summary-list">
         <div>
           <dt>Format</dt>
@@ -246,82 +375,92 @@ function ModelCard({
           <dt>Tensors</dt>
           <dd>{inspection?.tensorCount.toLocaleString() ?? "Not reported"}</dd>
         </div>
+        <div>
+          <dt>Trained context</dt>
+          <dd>
+            {contextLength === undefined
+              ? "Not declared"
+              : `${contextLength.toLocaleString()} tokens`}
+          </dd>
+        </div>
       </dl>
       <details className="model-inspector">
         <summary>Inspect files and metadata</summary>
         {model.files.map((file) => (
-          <section
-            key={file.blobId}
-            className="model-file-inspection"
-            aria-labelledby={`${model.id}-${file.blobId}`}
-          >
-            <h4 id={`${model.id}-${file.blobId}`}>{file.displayName}</h4>
-            <p className="model-file-role">Role: {managedFileRole(file.displayName)}</p>
-            <p className="model-hash">SHA-256 {file.sha256}</p>
-            {file.inspectionError === undefined ? null : (
-              <div className="model-alert metadata-warning">
-                <TriangleAlert aria-hidden="true" />
-                <p>
-                  Metadata inspection unavailable: {file.inspectionError.message} The verified model
-                  bytes remain installed.
-                </p>
-              </div>
-            )}
-            {file.inspection === undefined ? (
-              <dl className="model-summary-list compact">
-                <div>
-                  <dt>Size</dt>
-                  <dd>{formatBytes(file.size)}</dd>
-                </div>
-              </dl>
-            ) : (
-              <>
-                <dl className="model-summary-list compact">
-                  <div>
-                    <dt>Size</dt>
-                    <dd>{formatBytes(file.size)}</dd>
-                  </div>
-                  <div>
-                    <dt>Metadata</dt>
-                    <dd>{file.inspection.metadataCount.toLocaleString()} entries</dd>
-                  </div>
-                  <div>
-                    <dt>Name</dt>
-                    <dd>{file.inspection.name ?? "Not declared"}</dd>
-                  </div>
-                </dl>
-                <div className="metadata-table-wrap">
-                  <table className="metadata-table">
-                    <thead>
-                      <tr>
-                        <th scope="col">Key</th>
-                        <th scope="col">Type</th>
-                        <th scope="col">Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {file.inspection.entries.map((entry) => (
-                        <tr key={entry.key}>
-                          <th scope="row">{entry.key}</th>
-                          <td>{entry.type}</td>
-                          <td>{entry.value}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {file.inspection.omittedEntries > 0 ? (
+          <details key={file.blobId} className="model-file-inspection">
+            <summary>
+              <span className="model-file-summary-name">{file.displayName}</span>
+              <span className="model-file-summary-facts">
+                <span>{formatBytes(file.size)}</span>
+                <span>
+                  {file.inspection === undefined
+                    ? "Metadata unavailable"
+                    : `${file.inspection.metadataCount.toLocaleString()} entries`}
+                </span>
+                <span>Name: {file.inspection?.name ?? "Not declared"}</span>
+              </span>
+            </summary>
+            <div className="model-file-details">
+              <p className="model-file-role">Role: {managedFileRole(file.displayName)}</p>
+              <p className="model-hash">SHA-256 {file.sha256}</p>
+              {file.inspectionError === undefined ? null : (
+                <div className="model-alert metadata-warning">
+                  <TriangleAlert aria-hidden="true" />
                   <p>
-                    {file.inspection.omittedEntries} additional entries omitted from the bounded
-                    inspector.
+                    Metadata inspection unavailable: {file.inspectionError.message} The verified
+                    model bytes remain installed.
                   </p>
-                ) : null}
-              </>
-            )}
-          </section>
+                </div>
+              )}
+              {file.inspection === undefined ? null : (
+                <>
+                  <div className="metadata-table-wrap">
+                    <table className="metadata-table">
+                      <thead>
+                        <tr>
+                          <th scope="col">Key</th>
+                          <th scope="col">Type</th>
+                          <th scope="col">Value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {file.inspection.entries.map((entry) => (
+                          <tr key={entry.key}>
+                            <th scope="row">{entry.key}</th>
+                            <td>{entry.type}</td>
+                            <td>{entry.value}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {file.inspection.omittedEntries > 0 ? (
+                    <p>
+                      {file.inspection.omittedEntries} additional entries omitted from the bounded
+                      inspector.
+                    </p>
+                  ) : null}
+                </>
+              )}
+            </div>
+          </details>
         ))}
       </details>
       <div className="model-actions destructive-actions">
+        {canSplit ? (
+          <Button
+            onClick={splitting ? onStopSplit : onSplit}
+            disabled={deleting || (!splitting && blocked)}
+            aria-busy={splitting}
+          >
+            {splitting ? <Pause aria-hidden="true" /> : <Scissors aria-hidden="true" />}
+            {splitting
+              ? "Stop splitting"
+              : compatibility.status === "needs-split"
+                ? "Prepare for wllama"
+                : "Split for wllama (optional)"}
+          </Button>
+        ) : null}
         <Button onClick={onInspect} disabled={inspecting || deleting} aria-busy={inspecting}>
           <RefreshCw aria-hidden="true" />
           {inspecting ? "Inspecting metadata" : "Re-run metadata inspection"}
@@ -356,6 +495,7 @@ function ModelCard({
 export default function ModelManager() {
   const client = useRef<ModelWorkerClient | undefined>(undefined);
   const refreshCount = useRef(0);
+  const progressRequestJobs = useRef(new Map<string, string>());
   const [inventory, setInventory] = useState<ModelInventory | undefined>(undefined);
   const [resolved, setResolved] = useState<ResolvedHuggingFaceRepository | undefined>(undefined);
   const [input, setInput] = useState("");
@@ -412,6 +552,7 @@ export default function ModelManager() {
       }
       if (event.type === "model/progress") {
         setRetryNotice(undefined);
+        progressRequestJobs.current.set(event.requestId, event.jobId);
         setProgress((current) =>
           new Map(current).set(event.jobId, {
             jobId: event.jobId,
@@ -419,11 +560,20 @@ export default function ModelManager() {
             completedBytes: event.completedBytes,
             totalBytes: event.totalBytes,
             currentFile: event.currentFile,
+            ...(event.splitStage === undefined ? {} : { splitStage: event.splitStage }),
           }),
         );
-        setStatus(
-          `${event.phase === "verifying" ? "Verifying" : event.phase === "importing" ? "Importing" : "Downloading"} ${event.currentFile}: ${formatBytes(event.completedBytes)} of ${formatBytes(event.totalBytes)}.`,
-        );
+        setStatus(progressStatus(event));
+      }
+      if (event.type === "model/error") {
+        const jobId = progressRequestJobs.current.get(event.requestId);
+        progressRequestJobs.current.delete(event.requestId);
+        if (jobId !== undefined)
+          setProgress((current) => {
+            const next = new Map(current);
+            next.delete(jobId);
+            return next;
+          });
       }
       if (event.type === "model/job") {
         setInventory((current) =>
@@ -449,10 +599,12 @@ export default function ModelManager() {
       }
       if (event.type === "model/complete") {
         setRetryNotice(undefined);
-        if (event.modelId !== undefined)
+        const progressJobId = progressRequestJobs.current.get(event.requestId);
+        progressRequestJobs.current.delete(event.requestId);
+        if (progressJobId !== undefined)
           setProgress((current) => {
             const next = new Map(current);
-            next.delete(event.modelId as string);
+            next.delete(progressJobId);
             return next;
           });
         void refresh();
@@ -583,6 +735,8 @@ export default function ModelManager() {
         job.state === "importing",
     ) ??
       false);
+  const modelTransformationBusy =
+    inventory?.models.some((model) => busyIds.has(`split:${model.id}`)) ?? false;
 
   return (
     <div className="model-manager">
@@ -946,7 +1100,11 @@ export default function ModelManager() {
                     model={model}
                     deleting={busyIds.has(model.id)}
                     inspecting={busyIds.has(`inspect:${model.id}`)}
-                    blocked={acquisitionBusy}
+                    blocked={acquisitionBusy || modelTransformationBusy}
+                    splitting={busyIds.has(`split:${model.id}`)}
+                    {...(progress.get(model.id)?.phase === "splitting"
+                      ? { splitProgress: progress.get(model.id) }
+                      : {})}
                     confirmDelete={confirmDelete === model.id}
                     onAskDelete={() => setConfirmDelete(model.id)}
                     onCancelDelete={() => setConfirmDelete(undefined)}
@@ -963,6 +1121,12 @@ export default function ModelManager() {
                       if (worker !== undefined)
                         void withBusy(`inspect:${model.id}`, () => worker.inspect(model.id));
                     }}
+                    onSplit={() => {
+                      const worker = client.current;
+                      if (worker !== undefined)
+                        void withBusy(`split:${model.id}`, () => worker.split(model.id));
+                    }}
+                    onStopSplit={() => client.current?.pause(model.id)}
                   />
                 ))}
               </div>

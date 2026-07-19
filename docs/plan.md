@@ -161,9 +161,9 @@ Depends on M0: HF API spike.
       integrity-checked per D-013 and the
       [HF API spike](hugging-face-api.md): commit-pinned identity, fresh resolver
       request per range, exact `Content-Range`, restart-safe partial state, and
-      worker verification before promotion. Resume design must anticipate the M3
-      streaming-split stage — a resumed download may target split output, not a
-      single file (D-009).
+      worker verification before promotion. D-028 supersedes D-009's provisional
+      streaming-split coupling: resume always targets the unchanged source artifact;
+      any wllama preparation happens after verification.
 - [x] OPFS model store with manifest (source, revision, size, hashes, format
       metadata) + management UI: list, inspect, delete, storage usage and quota
       (incl. `persist()` and eviction awareness).
@@ -192,25 +192,28 @@ closed and no unverified artifact is promoted. Malformed/hostile files fail with
 controlled metadata warning, never a crash; a parser failure does not override proven
 remote integrity or stored-copy equality for a local import.
 
-### M3 — First chat: wllama, with streaming split  `pending`
+### M3 — First chat: wllama, with verified GGUF split  `in progress`
 
 Goal: end-to-end text chat with a downloaded GGUF — including the monolithic
-multi-GB quants that make splitting mandatory (D-009).
+multi-GB quants that make splitting mandatory (D-028).
 
-- [ ] wasm build of llama.cpp's gguf-split (upstream MIT, NOTICE entry) running in a
-      worker as a download-pipeline stage: split while streaming, buffering only what
-      the offset tables require (D-009). Verify streaming feasibility experimentally
-      at milestone start; fallback is split-after-download (amend D-009 if so).
-- [ ] Split-on-demand over already-stored files: user imports and any pre-split
-      downloads run through the same splitter against OPFS — the streaming download
-      stage is not the only path (D-009).
-- [ ] wllama runtime adapter — the first `Runtime` implementation; one/many wasm
+- [x] wasm build of llama.cpp's gguf-split (upstream MIT, NOTICE entry) running in a
+      worker. The milestone-start experiment found upstream has no resumable streaming
+      sink, so use the recorded split-after-verification fallback (D-028 supersedes
+      D-009's streaming choice).
+- [x] Split-on-demand over already-stored files: user imports and downloads that
+      predate M3 run through the same splitter against OPFS (D-028).
+- [x] Runtime-driven preparation policy: acquisition retains verified GGUFs unchanged;
+      Chat prepares an oversized monolith when wllama is selected, smaller eligible
+      models expose an optional manager action, and a measured minimum shard at or
+      above 2 GB becomes a persistent incompatible-with-reason state (D-028).
+- [x] wllama runtime adapter — the first `Runtime` implementation; one/many wasm
       threads plus optional partial/full WebGPU layer offload as independent axes
       (WebGPU is on by default since wllama v3.1 — README checked 2026-07-17). Verify
       current shard-size limits and split-output compatibility at build time; bundle
       and self-host every runtime/worker/wasm asset, including the compat package,
       rather than allowing its default jsDelivr fallback (D-005, RE-002).
-- [ ] Determine wllama's actual MTP/speculative-decoding capability with the paired
+- [x] Determine wllama's actual MTP/speculative-decoding capability with the paired
       Gemma 4 target + MTP artifacts from M2 (D-026). Do not infer wrapper support
       from bundled llama.cpp support: prove that the browser adapter can mount the
       companion separately, select MTP rather than generic draft decoding, and run
@@ -220,13 +223,39 @@ multi-GB quants that make splitting mandatory (D-009).
       acceptance rate where exposed, failures, load/storage overhead, and observable
       memory. If it cannot, record the exact missing wrapper surface and expose an
       unavailable-with-reason capability instead of implying acceleration.
-- [ ] Streaming chat UI over the adapter.
-- [ ] Live per-response metrics from the first message: model load time,
+- [x] Streaming chat UI over the adapter, including incremental explicit-channel
+      parsing: active intermediate channels remain open, collapse on completion, and
+      stay expandable while final text remains visible; unmarked Gemma thinking before
+      a bare boundary is not duplicated into the final response (RE-019, RE-021).
+- [x] Model-declared trained context appears in the manager and becomes Chat's default;
+      the numeric control steps by 256 while accepting exact manual values and
+      preserving valid overrides across metadata refresh. Output
+      has no arbitrary token ceiling and remains bounded by EOS/configured context.
+- [x] Visible staged model-load UI: determinate progress for runtime-required splitting
+      and honest indeterminate phases while wllama loads local `Blob` files because the
+      pinned API exposes no percentage for that path (RE-018).
+- [x] Live per-response metrics from the first message: model load time,
       time-to-first-token, prefill/decode tok/s — every chat is a measurement.
+- [x] Correct the pinned wllama response-queue boundary: a
+      completed stream leaves its terminal result for the next request and can leave
+      part of that next response queued in turn. The content-hashed ESM transformation
+      drains the native result queue and fails closed if the pinned source changes
+      (D-029, RE-023).
+- [x] Preserve sampled token identity with validated logprob IDs and show bounded,
+      model-declared special tokens outside the active parser dialect in a closed,
+      copyable per-response disclosure (D-029, RE-022).
+- [x] Long-running split preparation and generation have explicit stop controls;
+      adapter disposal during load exits the in-flight wllama instance.
+
+*(Core implementation landed locally 2026-07-18. The feasibility experiment selected
+D-009's split-after-verification fallback; D-028 records the pinned wasm/wllama
+profile, exact MTP wrapper gap, synthetic split proof, and real tiny-Qwen3 CPU chat
+measurement. The milestone remains in progress for the live >2 GB exit check below.)*
 
 **Exit criteria:** on the live site, chat with a monolithic >2 GB GGUF quant
-end-to-end — auto-split on download, or split on demand for an imported file — with
-streaming output and live metrics. The pinned wllama build also has an evidence-backed
+end-to-end — runtime-driven preparation from Chat or explicit preparation in the model
+manager — with visible load state, streaming output, and live metrics. The pinned
+wllama build also has an evidence-backed
 MTP verdict: a controlled browser A/B result when usable, or the exact adapter/engine
 gap and an honest unavailable state when it is not. MTP availability is not required
 for the base chat path.

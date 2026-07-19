@@ -178,9 +178,8 @@ D-013 fixes this protocol for the M2 download worker:
    behavior on this path.
 5. Stream bytes to the recorded output stage in a worker, bounding every chunk and
    progress counter. After interruption, reconcile the manifest count with the actual
-   durable output length before requesting more bytes. For M3's streaming splitter,
-   that durable state is the split-stage checkpoint/output, not an assumed monolithic
-   temporary file.
+   durable output length before requesting more bytes. D-028 keeps M3 acquisition on
+   this ordinary-file path, then splits only after verification and promotion.
 6. Hash the complete logical artifact in the worker using the declared integrity
    algorithm—raw payload SHA-256 for LFS, Git-blob SHA-1 semantics for a selected
    non-LFS companion—before atomically promoting the partial record to an installed
@@ -189,10 +188,9 @@ D-013 fixes this protocol for the M2 download worker:
    error state and never expose the artifact as verified.
 
 For M2's ordinary file output, re-reading the durable prefix is a simple restart-safe
-way to rebuild incremental hash state. M3's streaming splitter must instead checkpoint
-source offset, durable split state, and resumable hash state as one consistent unit—or
-use D-009's split-after-download fallback—because transformed split output cannot be
-assumed to reproduce the original byte prefix cheaply. The current
+way to rebuild incremental hash state. D-028 records that M3's experiment found no
+upstream checkpoint for source offset, durable split state, and resumable hash state,
+so splitting uses D-009's post-verification fallback. The current
 [Web Cryptography digest method](https://w3c.github.io/webcrypto/#SubtleCrypto-method-digest)
 accepts one complete `BufferSource` and exposes no incremental state, so M2 must select
 and license-audit a worker-capable streaming SHA-256 implementation during

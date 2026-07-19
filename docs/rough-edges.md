@@ -25,6 +25,205 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-023: wllama leaves a terminal stream result for the next request  (2026-07-18, status: worked-around)
+
+**Environment:** `@wllama/wllama` 3.5.1 / bundled llama.cpp `b9640-dd4623a`,
+Chromium 149.0.7827.55 on Linux, one CPU thread, and the immutable 16,309,120-byte
+tiny-random Qwen3 Q2_K GGUF used by RE-017. **Repro or measurement:** On one loaded
+runtime, stream two consecutive six-token chat completions and retain every choice's
+text and `finish_reason`. Repeat once with `timings_per_token: false` and once with it
+enabled. **Observed:** In both variants, the first iterator returned its role chunk and
+six content chunks but no terminal chunk. The second iterator began with the first
+request's empty `finish_reason: "length"` chunk, then returned its role chunk and only
+five of its six generated content chunks. The pinned glue computes `has_more` by
+running the task loop, dequeues one result, and returns both; the JavaScript response
+loop exits on that task-loop flag after processing only the one dequeued result.
+**Expected:** Each iterator drains all results belonging to its own request, including
+its terminal record, before it completes. **Impact on WebAI:** Consecutive turns can
+consume a previous turn's terminal result and leave part of the current turn queued
+for the following request. Per-token timing is not the trigger. WebAI's pinned ESM
+transformation removes the premature non-empty-result break and continues until the
+native call reports both no payload and no active task. The transformer asserts one
+exact source match, receives its own content hash, and is covered by the runtime asset
+gate. A post-patch run loaded the real local Gemma 4 from five shards and issued two
+consecutive two-token chats; each iterator returned both sampled token IDs and its own
+`finish_reason: "length"` record (D-029). **Links:** [wllama 3.5.1 native result glue](https://github.com/ngxson/wllama/blob/3.5.1/cpp/wllama-context.h),
+[JavaScript response loop](https://github.com/ngxson/wllama/blob/3.5.1/src/wllama.ts),
+[D-028](decisions.md).
+
+## RE-022: wllama exposes sampled token IDs through undeclared logprob data  (2026-07-18, status: worked-around)
+
+**Environment:** `@wllama/wllama` 3.5.1 / bundled llama.cpp `b9640-dd4623a`,
+Chromium 149.0.7827.55 on Linux, the RE-017 tiny-random Qwen3 GGUF, and local
+`gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf` (2,620,370,976 bytes, SHA-256
+`e531007218dfab990486a5de7676a6932d6ea8dea233d1f698d7c21cf8a16889`). **Repro or
+measurement:** Compare streamed `createChatCompletion` and raw-prompt
+`createCompletion` with `return_tokens: true`, then repeat with logprobs enabled.
+Split the Gemma file into five upstream-compatible temporary shards, load it through
+the pinned browser runtime with `reasoning_format: "none"`, and generate 512 tokens
+from a medieval-blacksmith prompt. **Observed:** `return_tokens` alone added neither a
+`tokens` field nor token IDs to either API's chunks. Logprobs added an `id`, decoded
+`token`, bytes, and score for every sampled token in both APIs. The declared chat
+logprob type omits `id`, while the raw API returned the same content-array shape rather
+than its declared legacy raw-logprob shape. In the real Gemma run, the exact streamed
+boundary chunk was `{ delta.content: "<channel|>", logprob.id: 101,
+logprob.token: "<channel|>" }`; all 512 sampled tokens had IDs. GGUF metadata classifies
+vocabulary item 101 as user-defined token type 4, not control type 3. **Expected:** A
+token-return option should have a documented, typed result shape, and runtime values
+should match the declarations. **Impact on WebAI:** wllama's raw-prompt completion API
+does not provide better token visibility than its chat API. Chat plus validated
+logprob payloads preserve exact sampled IDs while retaining chat templating and
+structured deltas. WebAI validates IDs against a bounded GGUF-declared special-token
+index, filters its known channel dialect, and exposes the remainder in a bounded
+copyable disclosure. The pinned compatibility test and asset hash guard the undeclared
+shape; logprob overhead and tool-call token coverage remain unmeasured (D-029). **Links:**
+[wllama 3.5.1 OAI-compatible types](https://github.com/ngxson/wllama/blob/3.5.1/src/types/oai-compat.ts),
+[llama.cpp server completion options](https://github.com/ggml-org/llama.cpp/blob/dd4623a74f0c85e6b1dd9ee99a92b9c67cac3708/tools/server/README.md),
+[RE-021](#re-021-gemma-4-closes-reasoning-with-a-bare-channel-token).
+
+## RE-021: Gemma 4 closes reasoning with a bare channel token  (2026-07-18, status: worked-around)
+
+**Environment:** `@wllama/wllama` 3.5.1 / bundled llama.cpp `b9640-dd4623a` and
+`unsloth/gemma-4-E2B-it-qat-GGUF`, live browser chat observed 2026-07-18. **Repro or
+measurement:** Generate a reasoning response with `reasoning_format: "none"` and inspect
+the visible channel boundary. **Observed:** The stream used `<channel|>` between the
+thinking trace and user-facing response. WebAI recognized only named `<|channel>...`
+and `<|channel|>...<|message|>` openings, so it displayed the separator and final answer
+inside the Thinking disclosure. llama.cpp's Gemma 4 logs independently identify
+`<channel|>` as a reserved generated token at the transition out of reasoning.
+**Expected:** The intermediate channel completes at the reserved closing token and the
+following text remains visible as final output. **Impact on WebAI:** The bounded parser
+recognizes fragmented `<channel|>`, completes the active channel, and starts a final
+channel without rendering the marker. The live example also emitted its reasoning
+preamble before any named opening marker; when the bare boundary later arrives, WebAI
+retroactively classifies that implicit text as Thinking rather than joining it to the
+visible answer. Unit and controlled browser tests cover both shapes. **Links:** [llama.cpp Gemma 4 trace](https://github.com/ggml-org/llama.cpp/issues/22786),
+[RE-019](#re-019-wllamas-declared-chat-chunk-type-omits-parsed-reasoning-output),
+[D-028](decisions.md).
+
+## RE-020: Per-token cumulative channel renders can starve the page  (2026-07-18, status: worked-around)
+
+**Environment:** React 19.2.7, headless Chromium, WebAI's wllama channel path, and a
+live `unsloth/gemma-4-E2B-it-qat-GGUF` run observed 2026-07-18. **Repro or
+measurement:** The live run completed a long thinking channel and then left the page
+main thread unresponsive. A controlled adapter emitted 50,000 Gemma-style special-token
+chunks followed by a final channel; each cumulative channel snapshot previously queued
+its own `setMessages` update. The Send click did not return before the 45-second test
+timeout. As a control, completing and collapsing one synthetic 2,000,000-character
+thinking snapshot took 191 ms, so channel collapse alone did not reproduce the hang.
+**Observed:** Rendering frequency, rather than retained response size, allowed a fast or
+runaway stream to starve the page. The exact post-thinking tokens from the live run were
+not captured, so whether the model, llama.cpp, or wllama initiated that sequence remains
+open. **Expected:** Response text remains complete and inspectable without model token
+rate determining React render rate. **Impact on WebAI:** Chat retains only the latest
+cumulative channel snapshot pending between animation frames, while the adapter batches
+raw chunks to a 16 ms cadence before parsing. Incomplete channel-marker suffixes are
+bounded to 256 bytes, and completion or failure flushes synchronously. A controlled
+browser regression keeps the 50,000-chunk stream responsive without imposing an
+output-token ceiling.
+**Links:** [RE-019](#re-019-wllamas-declared-chat-chunk-type-omits-parsed-reasoning-output),
+[D-028](decisions.md).
+
+## RE-019: wllama's declared chat chunk type omits parsed reasoning output  (2026-07-18, status: worked-around)
+
+**Environment:** `@wllama/wllama` 3.5.1 / bundled llama.cpp `b9640-dd4623a` and
+`unsloth/gemma-4-E2B-it-qat-GGUF`, observed 2026-07-18. **Repro or measurement:**
+Generate with the default Gemma 4 chat template, stream `delta.content`, and retain
+the final usage/timings chunk. **Observed:** The terminal record reported 98 prompt
+tokens and the configured 64 completion tokens, but ordinary `delta.content` remained
+empty, so WebAI displayed metrics without response text and could not measure TTFT.
+The pinned llama.cpp binary contains the Gemma 4 reasoning parser, while wllama's
+`ChatCompletionChunkDelta` declaration exposes `content` but not llama.cpp's
+`reasoning_content` extension. **Expected:** Generated text must remain observable
+through the wrapper's declared streaming API. **Impact on WebAI:** Models load with
+`reasoning_format: "none"`, which leaves reasoning and answer text in declared
+`content`. Generation uses llama.cpp's `max_tokens: -1` with context shifting disabled,
+so EOS or the configured context—not an arbitrary response cap—ends output. A bounded
+incremental parser recognizes fragmented channel markers, keeps the active channel
+open, collapses intermediate channels when they complete, and leaves final text
+visible. A controlled browser test verifies these transitions and observed TTFT.
+**Links:** [llama.cpp
+reasoning format](https://github.com/ggml-org/llama.cpp/blob/dd4623a74f0c85e6b1dd9ee99a92b9c67cac3708/tools/server/README.md),
+[wllama 3.5.1 response types](https://github.com/ngxson/wllama/blob/3.5.1/src/types/oai-compat.ts),
+[D-028](decisions.md).
+
+## RE-018: wllama local-Blob model loads expose no progress callback  (2026-07-18, status: worked-around)
+
+**Environment:** `@wllama/wllama` 3.5.1 npm source and WebAI's verified OPFS
+`File`/`Blob[]` load path, inspected 2026-07-18. **Repro or measurement:** Compare
+`loadModelFromUrl(..., { progressCallback })` with `loadModel(Blob[], params)` and trace
+the latter through `prepareBlobs()`, worker/wasm initialization, and the blocking
+`wllamaAction("load")`. **Observed:** Download options report transferred bytes, but
+`LoadModelParams` has no progress callback and the local load resolves only after
+engine initialization, GGUF parsing, backend setup, weight loading, and context
+allocation. Default JSPI reads may be lazy, overlapping, or non-sequential, so counting
+internal reads would not yield an honest overall percentage. **Expected:** A local
+multi-gigabyte model load should expose stable phase or byte progress independently of
+network acquisition. **Impact on WebAI:** Chat reports determinate progress only for
+WebAI-owned split preparation, then visible indeterminate phases for opening verified
+files, loading bundled runtime assets, and loading weights. It reports elapsed time but
+never fabricates a percentage or scrapes unstable native logs. **Links:** [wllama 3.5.1
+load parameters](https://github.com/ngxson/wllama/blob/3.5.1/src/types/types.ts),
+[local load implementation](https://github.com/ngxson/wllama/blob/3.5.1/src/wllama.ts),
+[D-028](decisions.md).
+
+## RE-017: wllama streaming omits final timings unless per-token timings are requested  (2026-07-18, status: worked-around)
+
+**Environment:** wllama 3.5.1 / llama.cpp `b9640-dd4623a`, headless Chromium on
+Linux, one CPU thread, immutable 16,309,120-byte tiny-random Qwen3 Q2_K GGUF,
+2026-07-18. **Repro or measurement:** Stream a 64-token chat completion first with
+`stream_options.include_usage`, then with both that option and
+`timings_per_token: true`; inspect every chunk's optional `usage` and `timings`.
+**Observed:** The first run streamed text and completed but exposed neither usage nor
+timings. The second exposed running/final llama.cpp timing records, including prompt
+and predicted token counts and rates; the measured path reported 1,475.41 prefill and
+148.70 decode tok/s. **Expected:** The typed optional final `timings` member suggests
+that a completed stream may report aggregate timings without requesting every token's
+timing. **Impact on WebAI:** The adapter explicitly requests per-token timings and
+uses the latest record for token counts and throughput, while TTFT/end-to-end remain
+page timestamps. This is a path check, not a performance claim or a measurement of
+the option's overhead. **Links:** [wllama 3.5.1 response types](https://github.com/ngxson/wllama/blob/3.5.1/src/types/oai-compat.ts),
+[llama.cpp streaming timing test](https://github.com/ggml-org/llama.cpp/blob/dd4623a74f0c85e6b1dd9ee99a92b9c67cac3708/tools/server/tests/unit/test_chat_completion.py),
+[D-028](decisions.md).
+
+## RE-016: wllama cannot assign a non-mmproj companion a separate model role  (2026-07-18, status: open)
+
+**Environment:** `@wllama/wllama` 3.5.1 npm contents and bundled llama.cpp
+`b9640-dd4623a`, inspected 2026-07-18; paired Gemma 4 target/MTP artifacts from M2.
+**Repro or measurement:** Trace `loadModel(blobs, params)` through `prepareBlobs()` and
+the worker load request. Supply a target plus an MTP GGUF and compare with mmproj
+handling. **Observed:** `prepareBlobs()` detects mmproj as the only separate role. It
+renames every other blob `model-NNNNN-of-NNNNN.gguf` and sends all of them in target
+`model_paths`. Load parameters forward generic `spec_draft_*` values, but there is no
+separate draft/MTP path or llama.cpp MTP-method selector. **Expected:** A browser
+wrapper claiming controllable MTP would mount target and companion under distinct
+roles and select the engine's MTP path. **Impact on WebAI:** The M3 adapter excludes
+the installed companion from target shards and reports `unsupported` with reason
+`companion-mount-not-exposed`; upstream engine support and artifact availability are
+not mislabeled as acceleration. No target-only/MTP A/B is valid on this wrapper.
+**Links:** [wllama 3.5.1 blob preparation](https://github.com/ngxson/wllama/blob/3.5.1/src/utils.ts),
+[wllama 3.5.1 load request](https://github.com/ngxson/wllama/blob/3.5.1/src/wllama.ts),
+[D-026](decisions.md), [D-028](decisions.md).
+
+## RE-015: upstream gguf-split has no resumable streaming sink  (2026-07-18, status: worked-around)
+
+**Environment:** llama.cpp commit
+`dd4623a74f0c85e6b1dd9ee99a92b9c67cac3708`, Emscripten 4.0.20, and M2's one-MiB
+restart-safe acquisition contract, inspected and built on Linux 2026-07-18.
+**Repro or measurement:** Build `tools/gguf-split`, trace its input I/O, and compare
+the state it retains with D-025's durable source-offset checkpoint. The tool opens a
+completed file, reads the GGUF table, builds output metadata, and seeks to each tensor
+body; it exposes neither a stream consumer nor serializable parser, output-hash, and
+split-writer state. **Observed:** A wasm recompile cannot consume a resumable network
+stream safely. Advancing the durable download offset would lose corresponding derived
+state on worker/page loss. **Expected:** A download transformation sink must checkpoint
+source offset, split outputs, splitter state, and resumable hashes atomically.
+**Impact on WebAI:** D-028 uses the recorded fallback: verify and promote the monolith,
+then run a bounded wasm planner plus TypeScript OPFS copier. This costs an extra full
+source read and temporary source-plus-output storage, but leaves M2's resume and
+integrity contract unchanged. **Links:** [pinned upstream tool](https://github.com/ggml-org/llama.cpp/blob/dd4623a74f0c85e6b1dd9ee99a92b9c67cac3708/tools/gguf-split/gguf-split.cpp),
+[D-009](decisions.md), [D-028](decisions.md).
+
 ## RE-014: Gemma 4 MTP exposes a hyphenated architecture namespace  (2026-07-18, status: worked-around)
 
 **Environment:** `mtp-gemma-4-E2B-it.gguf` from

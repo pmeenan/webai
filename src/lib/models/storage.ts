@@ -510,6 +510,121 @@ export async function installModel(model: InstalledModelRecord): Promise<void> {
   await withMutationLock(async () => await installModelLocked(model));
 }
 
+export async function recordModelRuntimeIssue(
+  modelId: string,
+  issue: NonNullable<InstalledModelRecord["runtimeIssues"]>[number],
+): Promise<InstalledModelRecord> {
+  return await withMutationLock(async () => {
+    const database = await openModelDatabase();
+    const transaction = database.transaction("models", "readwrite");
+    const done = transactionDone(transaction);
+    const models = transaction.objectStore("models");
+    const current = await requestResult(
+      models.get(modelId) as IDBRequest<InstalledModelRecord | undefined>,
+    );
+    if (current === undefined) {
+      transaction.abort();
+      await done.catch(() => undefined);
+      throw storageFailure("The model no longer exists while recording runtime compatibility.");
+    }
+    const next: InstalledModelRecord = {
+      ...current,
+      runtimeIssues: [
+        ...(current.runtimeIssues?.filter((entry) => entry.runtimeId !== issue.runtimeId) ?? []),
+        issue,
+      ],
+    };
+    models.put(next);
+    await done;
+    return next;
+  });
+}
+
+export async function replaceModelFiles(
+  modelId: string,
+  sourceFile: ModelFileRecord,
+  derivedFiles: readonly ModelFileRecord[],
+  derivation: NonNullable<InstalledModelRecord["derivation"]>,
+): Promise<InstalledModelRecord> {
+  const garbage = await withMutationLock(async () => {
+    const database = await openModelDatabase();
+    const transaction = database.transaction(["models", "blobs"], "readwrite");
+    const done = transactionDone(transaction);
+    const models = transaction.objectStore("models");
+    const blobs = transaction.objectStore("blobs");
+    const current = await requestResult(
+      models.get(modelId) as IDBRequest<InstalledModelRecord | undefined>,
+    );
+    if (
+      current === undefined ||
+      !current.files.some(
+        (file) => file.blobId === sourceFile.blobId && file.opfsPath === sourceFile.opfsPath,
+      )
+    ) {
+      transaction.abort();
+      await done.catch(() => undefined);
+      throw storageFailure("The model changed while its GGUF shards were being prepared.");
+    }
+
+    for (const file of derivedFiles) {
+      const existing = await requestResult(
+        blobs.get(file.blobId) as IDBRequest<BlobRecord | undefined>,
+      );
+      blobs.put(
+        existing === undefined
+          ? {
+              schemaVersion: modelSchemaVersion,
+              id: file.blobId,
+              sha256: file.sha256,
+              size: file.size,
+              opfsPath: file.opfsPath,
+              verification: "sha256",
+              referenceCount: 1,
+              state: "verified",
+            }
+          : { ...existing, referenceCount: existing.referenceCount + 1, state: "verified" },
+      );
+    }
+
+    const sourceBlob = await requestResult(
+      blobs.get(sourceFile.blobId) as IDBRequest<BlobRecord | undefined>,
+    );
+    const nextSourceReferences = Math.max(0, (sourceBlob?.referenceCount ?? 1) - 1);
+    if (sourceBlob !== undefined) {
+      blobs.put({
+        ...sourceBlob,
+        referenceCount: nextSourceReferences,
+        state: nextSourceReferences === 0 ? "garbage" : "verified",
+      });
+    }
+    const files = current.files.flatMap((file) =>
+      file.blobId === sourceFile.blobId && file.opfsPath === sourceFile.opfsPath
+        ? derivedFiles
+        : [file],
+    );
+    const next: InstalledModelRecord = {
+      ...current,
+      files,
+      totalSize: files.reduce((total, file) => total + file.size, 0),
+      derivation,
+      runtimeIssues: current.runtimeIssues?.filter((issue) => issue.runtimeId !== "wllama") ?? [],
+    };
+    models.put(next);
+    await done;
+    return {
+      model: next,
+      garbage:
+        sourceBlob !== undefined && nextSourceReferences === 0
+          ? { id: sourceBlob.id, path: sourceBlob.opfsPath }
+          : undefined,
+    };
+  });
+  if (garbage.garbage !== undefined) {
+    await finishGarbageBlob(garbage.garbage.id, garbage.garbage.path);
+  }
+  return garbage.model;
+}
+
 async function finishGarbageBlob(blobId: string, path: string): Promise<void> {
   const beforeDatabase = await openModelDatabase();
   const beforeTransaction = beforeDatabase.transaction("blobs", "readonly");
@@ -597,8 +712,24 @@ async function collectGarbage(): Promise<void> {
         );
         for (const blob of garbage) await finishGarbageBlob(blob.id, blob.opfsPath);
         await collectOrphanedBlobs();
+        await collectOrphanedSplitPartials();
       }),
   );
+}
+
+async function collectOrphanedSplitPartials(): Promise<void> {
+  let directory: FileSystemDirectoryHandle;
+  try {
+    directory = await (await opfsRoot(false)).getDirectoryHandle("partials");
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") return;
+    throw storageFailure("The partial-model directory could not be reconciled.", error);
+  }
+  for await (const [name, handle] of directory.entries()) {
+    if (handle.kind === "directory" && name.startsWith("split-")) {
+      await deleteStoredPath(`partials/${name}`);
+    }
+  }
 }
 
 async function collectOrphanedBlobs(): Promise<void> {

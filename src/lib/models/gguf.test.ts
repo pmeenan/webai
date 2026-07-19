@@ -67,6 +67,116 @@ describe("defensive GGUF metadata parsing", () => {
     });
   });
 
+  it("promotes the architecture context length for runtime configuration", () => {
+    const writer = new FixtureWriter();
+    writer.raw(0x47, 0x47, 0x55, 0x46);
+    writer.u32(3);
+    writer.u64(0n);
+    writer.u64(2n);
+    writer.entry("general.architecture", 8, () => writer.string("gemma4"));
+    writer.entry("gemma4.context_length", 4, () => writer.u32(131_072));
+    expect(parseGgufHeader(writer.result())).toMatchObject({
+      architecture: "gemma4",
+      contextLength: 131_072,
+    });
+  });
+
+  it("retains a bounded model-declared inventory of diagnostic tokenizer items", () => {
+    const writer = new FixtureWriter();
+    writer.raw(0x47, 0x47, 0x55, 0x46);
+    writer.u32(3);
+    writer.u64(0n);
+    writer.u64(2n);
+    writer.entry("tokenizer.ggml.token_type", 9, () => {
+      writer.u32(4);
+      writer.u64(4n);
+      for (const type of [1, 4, 3, 5]) writer.u32(type);
+    });
+    writer.entry("tokenizer.ggml.tokens", 9, () => {
+      writer.u32(8);
+      writer.u64(4n);
+      for (const token of ["ordinary", "<mystery|>", "<control>", "<unused49>"]) {
+        writer.string(token);
+      }
+    });
+
+    expect(parseGgufHeader(writer.result())).toMatchObject({
+      specialTokenCount: 3,
+      specialTokensTruncated: false,
+      specialTokens: [
+        { id: 1, text: "<mystery|>", type: 4, typeName: "user-defined" },
+        { id: 2, text: "<control>", type: 3, typeName: "control" },
+        { id: 3, text: "<unused49>", type: 5, typeName: "unused" },
+      ],
+    });
+  });
+
+  it("reports special-token inventory truncation without retaining an unbounded list", () => {
+    const writer = new FixtureWriter();
+    const count = 1030;
+    writer.raw(0x47, 0x47, 0x55, 0x46);
+    writer.u32(3);
+    writer.u64(0n);
+    writer.u64(2n);
+    writer.entry("tokenizer.ggml.tokens", 9, () => {
+      writer.u32(8);
+      writer.u64(BigInt(count));
+      for (let index = 0; index < count; index += 1) writer.string(`<special-${index}>`);
+    });
+    writer.entry("tokenizer.ggml.token_type", 9, () => {
+      writer.u32(4);
+      writer.u64(BigInt(count));
+      for (let index = 0; index < count; index += 1) writer.u32(4);
+    });
+
+    const inspection = parseGgufHeader(writer.result());
+    expect(inspection.specialTokenCount).toBe(count);
+    expect(inspection.specialTokens).toHaveLength(1024);
+    expect(inspection.specialTokensTruncated).toBe(true);
+  });
+
+  it("keeps primary metadata when the optional special-token inventory is malformed", () => {
+    const writer = new FixtureWriter();
+    writer.raw(0x47, 0x47, 0x55, 0x46);
+    writer.u32(3);
+    writer.u64(0n);
+    writer.u64(3n);
+    writer.entry("general.name", 8, () => writer.string("Metadata survives"));
+    writer.entry("tokenizer.ggml.tokens", 9, () => {
+      writer.u32(8);
+      writer.u64(40n);
+      for (let index = 0; index < 40; index += 1) {
+        if (index === 35) {
+          writer.u64(1n);
+          writer.raw(0xff);
+        } else {
+          writer.string(`token-${index}`);
+        }
+      }
+    });
+    writer.entry("tokenizer.ggml.token_type", 9, () => {
+      writer.u32(4);
+      writer.u64(40n);
+      for (let index = 0; index < 40; index += 1) writer.u32(index === 35 ? 4 : 1);
+    });
+
+    expect(parseGgufHeader(writer.result())).toMatchObject({
+      name: "Metadata survives",
+      specialTokenInventoryInspected: true,
+    });
+    expect(parseGgufHeader(writer.result()).specialTokens).toBeUndefined();
+  });
+
+  it("does not promote implausibly large untrusted context declarations", () => {
+    const writer = new FixtureWriter();
+    writer.raw(0x47, 0x47, 0x55, 0x46);
+    writer.u32(3);
+    writer.u64(0n);
+    writer.u64(1n);
+    writer.entry("hostile.context_length", 10, () => writer.u64(10_000_000n));
+    expect(parseGgufHeader(writer.result()).contextLength).toBeUndefined();
+  });
+
   it("inspects a large model from its bounded prefix", async () => {
     const padding = new Uint8Array(16 * 1024 * 1024);
     await expect(

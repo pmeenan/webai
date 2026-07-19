@@ -20,9 +20,11 @@ const nonTraversedShippedRoots = new Set(["@astrojs/react", "astro", "tailwindcs
 // Build inputs or generators whose attributed data/code is reflected in output.
 const attributedBuildPackages = ["caniuse-lite", "lightningcss", "rolldown", "vite"];
 
-// react-remove-scroll-bar 2.3.8 declares MIT but omits the license file from its npm
-// tarball. This is the upstream repository's license, checked 2026-07-18.
+// These packages declare MIT but omit the license file from their npm tarballs.
+// Each fallback is the upstream repository's license, checked 2026-07-18.
 const fallbackLicenses = new Map([
+  ["@wllama/wllama", path.join(scriptDirectory, "license-fallbacks/wllama-MIT.txt")],
+  ["@wllama/wllama-compat", path.join(scriptDirectory, "license-fallbacks/wllama-MIT.txt")],
   [
     "react-remove-scroll-bar",
     path.join(scriptDirectory, "license-fallbacks/react-remove-scroll-bar-MIT.txt"),
@@ -211,6 +213,26 @@ export function generateThirdPartyNotices() {
     ),
     name: "shadcn/ui Button (adapted vendored source)",
     version: "2026-07-18 snapshot",
+  });
+
+  notices.push({
+    expression: "MIT",
+    homepage: "https://github.com/ggml-org/llama.cpp",
+    licenseText: normalizeLicenseText(
+      fs.readFileSync(path.join(scriptDirectory, "license-fallbacks/llama.cpp-MIT.txt"), "utf8"),
+    ),
+    name: "llama.cpp GGUF split planner (modified WebAssembly build)",
+    version: "dd4623a7 / webai-2",
+  });
+
+  notices.push({
+    expression: "MIT",
+    homepage: "https://github.com/ngxson/wllama/tree/3.5.1",
+    licenseText: normalizeLicenseText(
+      fs.readFileSync(path.join(scriptDirectory, "license-fallbacks/wllama-MIT.txt"), "utf8"),
+    ),
+    name: "wllama browser response drain (modified ESM bundle)",
+    version: "3.5.1 / webai-1",
   });
 
   notices.sort((left, right) =>

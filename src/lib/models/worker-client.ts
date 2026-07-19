@@ -166,6 +166,10 @@ export class ModelWorkerClient {
     await this.#send({ type: "model/inspect", modelId });
   }
 
+  async split(modelId: string): Promise<void> {
+    await this.#send({ type: "model/split", modelId });
+  }
+
   dispose(): void {
     this.#worker.terminate();
     this.#terminate(

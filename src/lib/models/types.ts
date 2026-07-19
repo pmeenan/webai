@@ -1,4 +1,5 @@
 export const modelSchemaVersion = 1 as const;
+export const maximumDeclaredContextTokens = 1024 * 1024;
 
 export type IntegrityIdentity =
   | { readonly kind: "lfs-sha256"; readonly digest: string }
@@ -33,14 +34,27 @@ export interface GgufMetadataEntry {
   readonly value: string;
 }
 
+export interface GgufSpecialToken {
+  readonly id: number;
+  readonly text: string;
+  readonly textTruncated: boolean;
+  readonly type: number;
+  readonly typeName: string;
+}
+
 export interface GgufInspection {
   readonly format: "gguf";
   readonly version: number;
   readonly tensorCount: number;
   readonly metadataCount: number;
   readonly architecture?: string;
+  readonly contextLength?: number;
   readonly name?: string;
   readonly quantization?: string;
+  readonly specialTokenInventoryInspected?: true;
+  readonly specialTokens?: readonly GgufSpecialToken[];
+  readonly specialTokenCount?: number;
+  readonly specialTokensTruncated?: boolean;
   readonly entries: readonly GgufMetadataEntry[];
   readonly omittedEntries: number;
 }
@@ -79,6 +93,22 @@ export interface InstalledModelRecord {
   readonly state: "installed" | "missing";
   readonly source: ModelSource;
   readonly files: readonly ModelFileRecord[];
+  readonly derivation?: {
+    readonly kind: "gguf-split";
+    readonly sourceBlobId: string;
+    readonly sourceSha256: string;
+    readonly toolVersion: string;
+    readonly maxShardBytes: number;
+  };
+  readonly runtimeIssues?: readonly {
+    readonly runtimeId: "wllama";
+    readonly reasonCode: "minimum-shard-size";
+    readonly message: string;
+    readonly measuredAt: string;
+    readonly limitBytes: number;
+    readonly requiredShardBytes: number;
+    readonly splitterVersion: string;
+  }[];
 }
 
 export interface BlobRecord {
@@ -161,7 +191,16 @@ export type ModelFailureCode =
 
 export interface ModelFailure {
   readonly code: ModelFailureCode;
-  readonly phase: "resolve" | "download" | "verify" | "import" | "inspect" | "storage";
+  readonly phase:
+    | "resolve"
+    | "download"
+    | "verify"
+    | "import"
+    | "inspect"
+    | "split"
+    | "load"
+    | "generate"
+    | "storage";
   readonly message: string;
   readonly retryable: boolean;
 }

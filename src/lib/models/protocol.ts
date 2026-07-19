@@ -5,6 +5,7 @@ import type {
   ModelInventory,
   ResolvedHuggingFaceRepository,
 } from "./types";
+import { maximumDeclaredContextTokens } from "./types";
 
 export const modelWorkerProtocolVersion = 1 as const;
 
@@ -62,6 +63,12 @@ export type ModelWorkerRequest =
       readonly type: "model/inspect";
       readonly requestId: string;
       readonly modelId: string;
+    }
+  | {
+      readonly protocolVersion: typeof modelWorkerProtocolVersion;
+      readonly type: "model/split";
+      readonly requestId: string;
+      readonly modelId: string;
     };
 
 export type ModelWorkerEvent =
@@ -76,7 +83,8 @@ export type ModelWorkerEvent =
       readonly type: "model/progress";
       readonly requestId: string;
       readonly jobId: string;
-      readonly phase: "downloading" | "verifying" | "importing";
+      readonly phase: "downloading" | "verifying" | "importing" | "splitting";
+      readonly splitStage?: "planning" | "hashing" | "copying" | "finalizing";
       readonly completedBytes: number;
       readonly totalBytes: number;
       readonly currentFile: string;
@@ -141,6 +149,41 @@ function isFailure(value: unknown): boolean {
   );
 }
 
+function isSpecialTokenInventory(value: Record<string, unknown>): boolean {
+  const inspected = value.specialTokenInventoryInspected;
+  const tokens = value.specialTokens;
+  const count = value.specialTokenCount;
+  const truncated = value.specialTokensTruncated;
+  if (inspected !== undefined && inspected !== true) return false;
+  if (tokens === undefined && count === undefined && truncated === undefined) return true;
+  if (
+    inspected !== true ||
+    !Array.isArray(tokens) ||
+    tokens.length > 1_024 ||
+    !nonnegativeInteger(count) ||
+    count > 1_000_000 ||
+    typeof truncated !== "boolean" ||
+    count < tokens.length ||
+    truncated !== count > tokens.length
+  )
+    return false;
+  const ids = new Set<number>();
+  return tokens.every((token) => {
+    if (
+      !isRecord(token) ||
+      !nonnegativeInteger(token.id) ||
+      ids.has(token.id) ||
+      !boundedText(token.text, 2_049) ||
+      typeof token.textTruncated !== "boolean" ||
+      ![2, 3, 4, 5].includes(token.type as number) ||
+      !boundedText(token.typeName, 64)
+    )
+      return false;
+    ids.add(token.id);
+    return true;
+  });
+}
+
 function isInspection(value: unknown): boolean {
   return (
     isRecord(value) &&
@@ -149,8 +192,13 @@ function isInspection(value: unknown): boolean {
     nonnegativeInteger(value.tensorCount) &&
     nonnegativeInteger(value.metadataCount) &&
     (value.architecture === undefined || boundedText(value.architecture, 512)) &&
+    (value.contextLength === undefined ||
+      (nonnegativeInteger(value.contextLength) &&
+        value.contextLength >= 256 &&
+        value.contextLength <= maximumDeclaredContextTokens)) &&
     (value.name === undefined || boundedText(value.name, 1_024)) &&
     (value.quantization === undefined || boundedText(value.quantization, 128)) &&
+    isSpecialTokenInventory(value) &&
     Array.isArray(value.entries) &&
     value.entries.length <= 128 &&
     value.entries.every(
@@ -236,6 +284,31 @@ function isInstalledModel(value: unknown): boolean {
         value.source.sha256.every(
           (digest) => typeof digest === "string" && /^[a-f0-9]{64}$/u.test(digest),
         );
+  const validDerivation =
+    value.derivation === undefined ||
+    (isRecord(value.derivation) &&
+      value.derivation.kind === "gguf-split" &&
+      boundedText(value.derivation.sourceBlobId, 80) &&
+      typeof value.derivation.sourceSha256 === "string" &&
+      /^[a-f0-9]{64}$/u.test(value.derivation.sourceSha256) &&
+      boundedText(value.derivation.toolVersion, 128) &&
+      nonnegativeInteger(value.derivation.maxShardBytes));
+  const validRuntimeIssues =
+    value.runtimeIssues === undefined ||
+    (Array.isArray(value.runtimeIssues) &&
+      value.runtimeIssues.length <= 8 &&
+      value.runtimeIssues.every(
+        (issue) =>
+          isRecord(issue) &&
+          issue.runtimeId === "wllama" &&
+          issue.reasonCode === "minimum-shard-size" &&
+          boundedText(issue.message, 1_024) &&
+          boundedText(issue.measuredAt, 64) &&
+          nonnegativeInteger(issue.limitBytes) &&
+          nonnegativeInteger(issue.requiredShardBytes) &&
+          issue.requiredShardBytes >= issue.limitBytes &&
+          boundedText(issue.splitterVersion, 128),
+      ));
   return (
     isSafeId(value.id) &&
     boundedText(value.displayName) &&
@@ -243,6 +316,8 @@ function isInstalledModel(value: unknown): boolean {
     nonnegativeInteger(value.totalSize) &&
     (value.state === "installed" || value.state === "missing") &&
     validSource &&
+    validDerivation &&
+    validRuntimeIssues &&
     Array.isArray(value.files) &&
     value.files.length <= 256 &&
     value.files.every(
@@ -331,7 +406,14 @@ export function parseModelWorkerEvent(value: unknown): ModelWorkerEvent | undefi
       return isSafeId(value.jobId) &&
         (value.phase === "downloading" ||
           value.phase === "verifying" ||
-          value.phase === "importing") &&
+          value.phase === "importing" ||
+          value.phase === "splitting") &&
+        (value.phase === "splitting"
+          ? value.splitStage === "planning" ||
+            value.splitStage === "hashing" ||
+            value.splitStage === "copying" ||
+            value.splitStage === "finalizing"
+          : value.splitStage === undefined) &&
         Number.isSafeInteger(value.completedBytes) &&
         (value.completedBytes as number) >= 0 &&
         Number.isSafeInteger(value.totalBytes) &&

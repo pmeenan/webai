@@ -23,6 +23,167 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-029: Chat retains token identity for bounded output diagnostics  (2026-07-18, status: accepted)
+
+**Decision:** The wllama adapter remains on `createChatCompletion`; raw-prompt
+`createCompletion` provides no additional sampled-token access and would make WebAI
+own chat-template application. Chat requests `logprobs: true` and
+`top_logprobs: 1`, then validates the measured but undeclared integer token ID and
+decoded token text before using them. GGUF inspection independently reads the model's
+`tokenizer.ggml.tokens` and `tokenizer.ggml.token_type` arrays from the already-bounded
+16 MiB header. It records the exact count and at most 1,024 bounded diagnostic token
+descriptions; excess input is labelled truncated rather than allocated without limit.
+
+During generation, only model-declared unknown, control, user-defined, or unused IDs
+that the active channel dialect does not recognize enter diagnostics. Byte-fallback
+and normal vocabulary items do not. Known channel pieces, including Gemma 4's
+`<channel|>`, are consumed without an alert. Each response retains at most 32 unique
+unrecognized IDs with occurrence counts and a count of omitted occurrences. Chat
+shows the result in a closed “Unrecognized model output” disclosure containing
+copyable, text-rendered JSON records; it never interpolates model data as HTML and
+never sends feedback automatically.
+
+The self-hosted wllama ESM receives one pinned, fail-closed WebAI transformation. Its
+response loop continues fetching until native `get_result` reports both an empty
+payload and no active task, rather than exiting after the first non-empty result whose
+task-loop flag is false. This drains the terminal record that wllama 3.5.1 otherwise
+leaves for the next completion (RE-023). The asset copier requires exactly one source
+match, hashes the transformed bytes, and the deployable MIT notices identify the
+modified bundle. The same gate generates and verifies the TypeScript URL manifest
+consumed by both the adapter and browser tests, so content-hash changes cannot leave
+either caller pinned to stale paths.
+
+**Context:** RE-022 measured both wrapper APIs with the real local Gemma 4 artifact.
+`return_tokens` exposed no IDs; logprobs exposed an `id` for every sampled token in
+both APIs, including `{ id: 101, token: "<channel|>" }`. The ID field and raw-logprob
+shape are absent from wllama's declarations, so an adapter cannot trust them without
+runtime checks. RE-023 independently reproduced cross-request terminal-result bleed
+with per-token timings both disabled and enabled, then traced it to the native
+`has_more`/single-dequeue and JavaScript break interaction.
+
+**Consequences:** Unknown future control dialects become visible and user-carried
+without speculative parser rules or telemetry. Models inspected before this optional
+metadata was added receive one model-worker metadata refresh when Chat next loads
+them; decoded response text still follows the bounded fallback parser if tokenizer
+inventory is unavailable. Top-one logprobs add
+stream payload and may have a performance cost that remains to be measured; tool-call
+delta coverage also remains unmeasured. The patch is intentionally source-shape
+sensitive so a wllama upgrade fails the asset gate instead of silently applying at the
+wrong location.
+
+**Reopen if:** wllama exposes documented typed token IDs without logprobs, fixes and
+releases the result-drain behavior, a runtime's structured channel/tool events make
+token diagnostics redundant, or measured logprob overhead is unacceptable.
+
+## D-028: M3 splits verified monoliths before wllama load  (2026-07-18, status: accepted)
+
+**Decision:** M3 uses D-009's fallback: download or import and SHA-256-verify a
+monolithic GGUF first, then derive upstream-compatible shards in the model worker.
+Acquisition always retains the verified artifact unchanged. A user can explicitly
+prepare a stored monolith, and Chat performs the same preparation just in time when a
+selected wllama model contains an individual file at or above 2,000,000,000 bytes.
+Splitting below that boundary is optional. Derived files have a nominal
+500,000,000-byte target, use llama.cpp's five-digit shard naming and `split.*`
+metadata, receive independent SHA-256 identities, and atomically replace the source in
+the model manifest. MTP and mmproj companions remain separate and unchanged.
+
+If a completely validated split plan still requires a shard at or above wllama's
+2,000,000,000-byte boundary, the transformation stops before copying. The original
+remains installed and the model records bounded compatibility evidence: runtime and
+reason IDs, limit and required-shard bytes, splitter version, timestamp, and safe
+explanation. Model and Chat cards persistently report wllama incompatibility instead
+of offering an identical retry while the recorded splitter version and runtime limit
+still match the active profile; a changed profile makes the evidence stale and permits
+a new measured attempt.
+
+The checked-in planner is a modified Emscripten 4.0.20 build of llama.cpp commit
+`dd4623a74f0c85e6b1dd9ee99a92b9c67cac3708`. It reads at most a 16 MiB prefix in wasm,
+caps input at one million tensors and output at 256 shards, and emits only validated
+headers plus tensor copy ranges. TypeScript performs 8 MiB bounded OPFS copies and
+hashing; interrupted staging directories and promoted-but-unreferenced blobs are
+removed during reconciliation. The source is retained until every output is durable
+and the manifest swap commits, then its zero-reference blob is garbage-collected.
+The split registers its abort controller under the installed model ID while it holds
+the acquisition lock, so either the manager or Chat can stop the transformation and
+leave the original manifest unchanged.
+
+The first runtime is pinned to wllama 3.5.1 / llama.cpp
+`b9640-dd4623a`. Its ESM, default wasm, compatibility wasm, and compatibility worker
+are content-hashed, self-hosted assets copied from pinned npm packages. CPU thread
+count and WebGPU layer count remain independent requested/effective fields. The chat
+adapter requests per-token timings so the streaming final record contains llama.cpp
+prefill/decode throughput; page time supplies TTFT and end-to-end duration.
+The adapter loads models with `reasoning_format: none` so parsed reasoning remains in
+the declared streaming `content` field rather than wllama 3.5.1 hiding a Gemma 4
+response in an undeclared `reasoning_content` extension. It parses explicit streamed
+channels incrementally, collapses completed intermediate channels, leaves final text
+visible, and recognizes Gemma 4's bare `<channel|>` closing token as the final-response
+boundary (RE-021). If unmarked text precedes that boundary, the parser retroactively
+classifies it as thinking rather than concatenating it into the final response. It
+uses `max_tokens: -1` with context shifting disabled so the
+configured context/EOS replaces a small arbitrary output ceiling (RE-019). Because
+channel events are cumulative snapshots, the adapter batches raw chunks to a 16 ms
+cadence before parsing and the page retains only the latest pending snapshot between
+animation frames, then flushes the terminal snapshot synchronously. Incomplete marker
+retention is capped at 256 bytes. This preserves all output without coupling parser or
+React update count to model token count (RE-020).
+
+GGUF inspection promotes a bounded architecture `context_length` as the model-declared
+trained maximum. Chat defaults the selected model to that value before load, exposes
+256-token number-input steps plus exact manual entry, preserves a valid user override
+when load-time inspection adds metadata, and labels the value as a model declaration
+rather than a browser-memory guarantee. If metadata omits it, Chat uses a 2,048-token
+fallback; wllama also exposes `n_ctx_train` only after model load.
+
+**Context:** The milestone-start experiment built and inspected upstream
+`gguf-split`. It opens a completed seekable input, constructs output metadata, then
+seeks back to copy tensor bodies; it has no resumable streaming sink or serializable
+split/hash checkpoint. Coupling a new transformed sink to M2's restart-safe source
+offset would require a separate I/O redesign and still retain source bytes until the
+header has arrived. The completed-file fallback preserves the already-measured M2
+integrity/resume contract at the cost of temporary source-plus-output storage and an
+extra full source read.
+
+A local headless Chromium smoke run on 2026-07-18 imported the immutable
+`tensorblock/optimum-internal-testing_tiny-random-qwen3-GGUF` Q2_K artifact
+(`ea33aa937989b0bd230157c89116d8356ea37f3ed039490ca4e340b650e47a78`, 16,309,120
+bytes), loaded it on one CPU thread in 863 ms, streamed a first response with 88 ms
+page-observed TTFT, and received llama.cpp timings of 1,475.41 prefill tok/s and
+148.70 decode tok/s. These are a development-machine path check, not a performance
+claim. A wasm-backed synthetic two-tensor fixture proves compatible multi-shard
+headers, content hashing, promotion, inspection, and malicious-size rejection.
+
+The M3 audit also closes wllama MTP as unavailable. `prepareBlobs()` classifies only
+mmproj separately and renames every other supplied blob as a target shard; `loadModel()`
+then sends all of them in `model_paths`. Although generic `spec_draft_*` parameters are
+forwarded, the wrapper exposes neither a separate draft/MTP mount nor llama.cpp's MTP
+selector. The adapter therefore excludes the installed MTP companion from target
+shards and reports stable reason `companion-mount-not-exposed`; no invalid A/B is run.
+
+**Consequences:** Peak splitting storage is approximately the verified source plus
+derived shards until manifest promotion. A quota failure is controlled and retryable;
+the source remains installed for a later attempt. Download and import completion no
+longer incur an unsolicited transformation or temporary storage spike. For wllama,
+preparation becomes required at first load only when its per-file boundary demands it;
+sub-limit monoliths remain directly loadable and offer optional 500 MB preparation.
+The other selected runtimes use ONNX, MLC, `.litertlm`, or browser-managed artifacts,
+so none benefits from transforming a GGUF during acquisition.
+
+wllama 3.5.1 exposes progress for its own network download path but no percentage for
+`loadModel(Blob[])`, the verified local-file path WebAI uses. Chat therefore reports
+real determinate split progress when preparation is required, then named indeterminate
+phases for opening files, loading bundled code, and initializing wllama/loading
+weights. It never
+fabricates model-load percentages. D-009's streaming choice is superseded, while its
+in-browser and on-demand splitting requirement stands. The M3 implementation is
+complete locally, but the milestone remains open until its live >2 GB end-to-end exit
+check.
+
+**Reopen if:** upstream ships a bounded resumable streaming splitter, wllama removes
+its individual-file boundary or adds local-load progress, wllama exposes a distinct
+MTP companion/method surface, or measured source-plus-output headroom makes the
+fallback unacceptable.
+
 ## D-027: Production deploys rsync directly into the live directory  (2026-07-18, status: accepted)
 
 **Decision:** `pnpm deploy` keeps the complete local quality/license gate and rebuild,
@@ -175,9 +336,8 @@ model. Imports accept one
 GGUF or one complete conventionally named shard set, hash the selected source while
 writing, then re-hash the stored OPFS bytes before promotion. A failed finalization
 returns to `ready-to-install`; an active import can be stopped and becomes
-`needs-source`. M3 remains responsible for
-streaming splitting and can replace the ordinary-file sink behind the existing
-durable-source-offset contract.
+`needs-source`. D-028 records M3's experiment and selected verified-monolith fallback;
+the existing durable source-offset contract stays unchanged.
 
 M2 deliberately lists and selects only LFS SHA-256-identified GGUF weight sets. It
 skips non-GGUF siblings before interpreting their optional size/hash fields and treats
@@ -255,8 +415,8 @@ than an unrecorded equivalence claim.
 
 **Reopen if:** OPFS move or sync handles regress in target Chrome; a measured engine
 cannot make writable-stream checkpoints acceptably; current GGUF introduces a
-structural version beyond v3; or M3 proves the sink/checkpoint contract insufficient
-for transformed split output.
+structural version beyond v3; or D-028's post-verification transformation no longer
+preserves the acquisition guarantees recorded here.
 
 ## D-024: Canonical site moves to the root of `webai.meenan.dev`; release target stays unchanged  (2026-07-18, status: accepted)
 
@@ -889,8 +1049,8 @@ metadata and final content closes those gaps without relying on CDN details.
 **Consequences:** M2's manifest carries immutable source identity and partial-stage
 state; a mutable branch name is provenance only. For ordinary file output, resume may
 re-read durable partial bytes to reconstruct hash state and must reconcile actual
-output length before fetching. M3's streaming splitter must checkpoint source offset,
-durable split state, and resumable hash state together or use D-009's fallback.
+output length before fetching. D-028 selects D-009's verified-monolith fallback after
+the M3 experiment found no upstream resumable split checkpoint.
 Sharded models retain an integrity identity and size per shard. Weight artifacts
 without an LFS SHA-256 fail closed; selected Git-managed companions use Git-blob
 verification. A final Xet bridge `ETag` is not mistaken for the payload SHA-256. M5's
@@ -1102,7 +1262,7 @@ architecture draft).
 evidence — notably WebLLM on a bad survey result, ORT-direct on a debugging need,
 embeddings post-launch, and Q8 on a hosting-spike blocker.
 
-## D-009: In-app GGUF splitting, streaming during download  (2026-07-17, accepted)
+## D-009: In-app GGUF splitting, streaming during download  (2026-07-17, status: superseded by D-028)
 
 **Decision:** Ship a wasm build of llama.cpp's gguf-split as part of the app, and run
 it as a stage of the download pipeline: monolithic GGUFs beyond wllama/wasm size
@@ -1138,7 +1298,7 @@ stands); or wasm/runtime size limits move enough that monolithic files load dire
 ## D-008: Milestone ladder: risk-first vertical slice (M1–M10)  (2026-07-17, accepted)
 
 **Decision:** The plan.md ladder is ordered: shell + capability layer + live deploy
-(M1) → manual model acquisition (M2) → first chat on wllama incl. streaming split
+(M1) → manual model acquisition (M2) → first chat on wllama incl. GGUF split
 (M3) → Prompt API as the *second* runtime (M4) → model browsing (M5) → chat testing
 depth (M6) → runtime breadth (M7) → benchmark harness (M8) → multimodal (M9) →
 capability filtering + launch (M10). Live per-response metrics ship with the first

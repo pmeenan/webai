@@ -26,6 +26,12 @@ importers:
       '@tailwindcss/vite':
         specifier: 4.3.3
         version: 4.3.3(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
+      '@wllama/wllama':
+        specifier: 3.5.1
+        version: 3.5.1
+      '@wllama/wllama-compat':
+        specifier: 3.5.1
+        version: 3.5.1
       astro:
         specifier: 7.1.1
         version: 7.1.1(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.2)(@types/node@24.13.3)(jiti@2.7.0)(yaml@2.9.0)
@@ -1411,6 +1417,12 @@ packages:
 
   '@vscode/l10n@0.0.18':
     resolution: {integrity: sha512-KYSIHVmslkaCDyw013pphY+d7x1qV8IZupYfeIfzNA+nsaWHbn5uPuQRvdRFsa9zFzGeudPuoGoZ1Op4jrJXIQ==}
+
+  '@wllama/wllama-compat@3.5.1':
+    resolution: {integrity: sha512-eWFeyLmAgshNsT4eti7El4F0Iip1/Gt/vn5thAhezFoRS8vkC2YjXRMAGmwHRttTWz+7u21f1Me/A70La1TgyA==}
+
+  '@wllama/wllama@3.5.1':
+    resolution: {integrity: sha512-m5L0KKtmUTKz5lGvVVa/Y3qRtoobu80Jne51U0CSR6O930aOUURzhMEAolNsN4v0kfQ9u58wi2IdpUicLfaXUw==}
 
   acorn-jsx@5.3.2:
     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}
@@ -4219,6 +4231,10 @@ snapshots:
       vscode-uri: 3.1.0
 
   '@vscode/l10n@0.0.18': {}
+
+  '@wllama/wllama-compat@3.5.1': {}
+
+  '@wllama/wllama@3.5.1': {}
 
   acorn-jsx@5.3.2(acorn@8.17.0):
     dependencies:

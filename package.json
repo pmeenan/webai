@@ -18,9 +18,11 @@
     "test": "vitest run && node --test scripts/*.test.mjs",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "runtime:wllama-assets": "node scripts/copy-wllama-assets.mjs --update",
+    "runtime:wllama-assets:check": "node scripts/copy-wllama-assets.mjs --check",
     "license:notices": "node scripts/generate-third-party-notices.mjs",
     "license:check": "node scripts/check-licenses.mjs",
-    "check": "corepack pnpm format:check && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && corepack pnpm test:e2e && corepack pnpm license:check",
+    "check": "corepack pnpm format:check && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm runtime:wllama-assets:check && corepack pnpm test && corepack pnpm test:e2e && corepack pnpm license:check",
     "deploy": "corepack pnpm check && corepack pnpm build && ./scripts/deploy.sh"
   },
   "dependencies": {
@@ -30,6 +32,8 @@
     "@noble/hashes": "2.2.0",
     "@radix-ui/react-dropdown-menu": "2.1.20",
     "@tailwindcss/vite": "4.3.3",
+    "@wllama/wllama": "3.5.1",
+    "@wllama/wllama-compat": "3.5.1",
     "astro": "7.1.1",
     "lucide-react": "1.25.0",
     "react": "19.2.7",

@@ -5,7 +5,14 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: [".astro/**", "dist/**", "node_modules/**", "playwright-report/**", "test-results/**"],
+    ignores: [
+      ".astro/**",
+      "dist/**",
+      "node_modules/**",
+      "playwright-report/**",
+      "public/runtime/**",
+      "test-results/**",
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,

@@ -7,7 +7,9 @@ import {
   installModel,
   promotePartialFile,
   putJob,
+  recordModelRuntimeIssue,
   reconcileModelInventory,
+  replaceModelFiles,
   requestStoragePersistence,
 } from "./storage";
 import type { DownloadJobRecord, InstalledModelRecord } from "./types";
@@ -135,6 +137,62 @@ describe("model storage crash recovery", () => {
     expect(await getStoredFile(`blobs/${sha256}`)).toBeUndefined();
   });
 
+  it("atomically replaces a source blob with referenced derived shards", async () => {
+    const id = `replace-${crypto.randomUUID()}`;
+    const sourceSha256 = crypto.randomUUID().replaceAll("-", "").padEnd(64, "0");
+    const model = modelFixture(id, sourceSha256);
+    const sourceFile = model.files[0];
+    if (sourceFile === undefined) throw new Error("source fixture missing");
+    await writeFixture(sourceFile.opfsPath);
+    await installModel(model);
+    const derivedFiles = [
+      {
+        blobId: `sha256:${"b".repeat(64)}`,
+        displayName: "fixture-00001-of-00002.gguf",
+        size: 2,
+        sha256: "b".repeat(64),
+        opfsPath: `blobs/${"b".repeat(64)}`,
+      },
+      {
+        blobId: `sha256:${"c".repeat(64)}`,
+        displayName: "fixture-00002-of-00002.gguf",
+        size: 2,
+        sha256: "c".repeat(64),
+        opfsPath: `blobs/${"c".repeat(64)}`,
+      },
+    ] as const;
+    await writeBytes(derivedFiles[0].opfsPath, Uint8Array.from([1, 2]));
+    await writeBytes(derivedFiles[1].opfsPath, Uint8Array.from([3, 4]));
+
+    await recordModelRuntimeIssue(id, {
+      runtimeId: "wllama",
+      reasonCode: "minimum-shard-size",
+      message: "The largest tensor cannot fit below the runtime file limit.",
+      measuredAt: "2026-07-18T00:00:00.000Z",
+      limitBytes: 2_000_000_000,
+      requiredShardBytes: 2_100_000_000,
+      splitterVersion: "test-splitter",
+    });
+    const replaced = await replaceModelFiles(id, sourceFile, derivedFiles, {
+      kind: "gguf-split",
+      sourceBlobId: sourceFile.blobId,
+      sourceSha256,
+      toolVersion: "test-splitter",
+      maxShardBytes: 2,
+    });
+    expect(replaced.files.map((file) => file.opfsPath)).toEqual(
+      derivedFiles.map((file) => file.opfsPath),
+    );
+    expect(replaced.totalSize).toBe(4);
+    expect(replaced.runtimeIssues).toEqual([]);
+    expect(await getStoredFile(sourceFile.opfsPath)).toBeUndefined();
+    expect(await getStoredFile(derivedFiles[0].opfsPath)).toBeDefined();
+
+    await deleteModel(id);
+    expect(await getStoredFile(derivedFiles[0].opfsPath)).toBeUndefined();
+    expect(await getStoredFile(derivedFiles[1].opfsPath)).toBeUndefined();
+  });
+
   it("does not resurrect a model deleted during reconciliation", async () => {
     const id = `reconcile-${crypto.randomUUID()}`;
     const sha256 = crypto.randomUUID().replaceAll("-", "").padEnd(64, "0");
@@ -213,6 +271,14 @@ describe("model storage crash recovery", () => {
     expect(await getStoredFile(`blobs/${sha256}`)).toBeDefined();
     await reconcileModelInventory();
     expect(await getStoredFile(`blobs/${sha256}`)).toBeUndefined();
+  });
+
+  it("removes staging directories left by an interrupted GGUF split", async () => {
+    const path = `partials/split-orphan-${crypto.randomUUID()}/0.part`;
+    await writeFixture(path);
+    expect(await getStoredFile(path)).toBeDefined();
+    await reconcileModelInventory();
+    expect(await getStoredFile(path)).toBeUndefined();
   });
 
   it("replaces a corrupt existing blob with the verified partial", async () => {

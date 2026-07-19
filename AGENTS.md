@@ -117,7 +117,8 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 
 ## Current status
 
-**M0, M1, and M2 are complete; M3 is next.** Manual HF/local acquisition,
-restart-safe verified downloads, the OPFS model manager, and repeatable best-effort
-GGUF inspection are live; see [docs/plan.md](docs/plan.md). Keep this paragraph current
-when plan.md milestone status changes (rule 5).
+**M0, M1, and M2 are complete; M3 is implemented locally and awaiting its live >2 GB
+exit check.** Verified acquisition, the OPFS model manager, bounded GGUF splitting,
+and the first measured wllama chat path are available; see
+[docs/plan.md](docs/plan.md). Keep this paragraph current when plan.md milestone
+status changes (rule 5).

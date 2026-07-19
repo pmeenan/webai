@@ -209,8 +209,8 @@ shows the engine safely supports it; the result records that shared execution sc
 Other worker responsibilities are separate:
 
 - an acquisition pipeline worker owns each active download/import transformation and
-  performs range validation, durable writes, incremental hashing, parsing, and—when
-  M3 proves it feasible—streaming GGUF splitting;
+  performs range validation, durable writes, incremental hashing, parsing, and M3's
+  post-verification GGUF splitting;
 - short-lived inspection workers parse local files not already in that pipeline;
 - capability probe workers test worker-context features and terminate after returning
   their evidence; and
@@ -404,12 +404,12 @@ and atomically promote only verified output. Signed CDN URLs are never stored.
 
 A source may feed an ordinary file sink or a transformation sink. The sink contract
 reports source bytes durably consumed plus a versioned checkpoint containing
-transformation state and resumable source-hash state. Streaming GGUF split therefore
-cannot advance the resumable source offset until its corresponding split output,
-splitter state, and hash state are durable. M3 either proves this contract or uses
-D-009's recorded split-after-download fallback. Imports use the same sink, validation,
-hashing, parser, and promotion path without a network source; a completed import gains
-its computed SHA-256 identity before promotion.
+transformation state and resumable source-hash state. M3's experiment found that
+upstream `gguf-split` requires a completed seekable input and has no serializable
+transformation/hash checkpoint, so D-028 selects D-009's split-after-verification
+fallback. Imports use the same sink, validation, hashing, parser, and promotion path
+without a network source; a completed import gains its computed SHA-256 identity
+before promotion.
 
 The scheduler bounds concurrent network and disk-heavy jobs, supports explicit pause,
 resume, cancel, and retry. It serializes writes to one artifact target and, once a
@@ -448,6 +448,67 @@ cannot resurrect a concurrent delete or overwrite newer job progress; individual
 failures degrade only their record. Zero-reference blob tombstones make physical
 deletion retryable, and an OPFS sweep removes blob files with no manifest or verified
 job after a promotion crash.
+
+### M3 implementation profile
+
+D-028 adds a model-worker transformation over installed GGUF bytes. A pinned
+llama.cpp wasm planner receives at most a 16 MiB prefix and emits bounded shard headers
+and tensor copy ranges; TypeScript validates the complete plan against source size,
+copies in 8 MiB OPFS chunks, hashes source and output, and atomically swaps the model
+manifest only after all derived blobs are durable. Acquisition retains verified GGUFs
+unchanged. The manager exposes explicit preparation for eligible monoliths, while the
+wllama chat path invokes it just in time when an individual file reaches the runtime's
+2,000,000,000-byte boundary. A completely validated plan that cannot fit below that
+limit records versioned numeric incompatibility evidence and retains the source.
+Reconciliation removes interrupted `partials/split-*` directories and unreferenced
+promoted blobs. Splits register with the same cross-tab abort channel as other
+disk-heavy acquisitions, and both manager-driven and just-in-time Chat preparation
+offer an explicit stop action without mutating the installed source manifest.
+
+The wllama 3.5.1 adapter owns the library's worker, loads only verified OPFS `File`
+objects wrapped with their original managed display names so wllama can order shards,
+chooses the self-hosted default or compatibility wasm through wllama's own feature
+probe, and clamps requested threads to one without isolation and GPU layers to zero
+unless `requestAdapter()` returns an adapter. Disposing during load also exits the
+in-flight library instance before it can become an orphaned session. Streaming chat
+consumes text chunks and records page-observed TTFT/end-to-end plus llama.cpp per-token
+prefill/decode timings. The MTP companion is
+not passed as a target shard: the pinned wrapper has no separate mount or MTP selector,
+so the session capability is `unsupported` with reason
+`companion-mount-not-exposed`. The local `Blob[]` load API exposes no percentage;
+adapter phase events therefore distinguish opening files, loading self-hosted assets,
+and the indeterminate engine/weight load without inventing byte progress.
+The pinned ESM is transformed at copy time to drain native result records until both
+the payload and task flag are empty; an exact-source assertion and content hash make
+the wllama 3.5.1 workaround fail closed on upgrades (RE-023, D-029).
+The adapter requests no fixed output ceiling (`max_tokens: -1`) while disabling
+context shifting, so EOS or the configured context ends generation. A bounded
+incremental parser recognizes fragmented explicit channel markers; active intermediate
+channels remain open, completed ones collapse but remain expandable, and final content
+stays visible. It accepts both named llama.cpp channel openings and Gemma 4's bare
+`<channel|>` closing token, which completes the active intermediate channel and starts
+final output. The adapter batches raw text chunks to a 16 ms cadence before channel
+parsing, and its incomplete-marker suffix is bounded. Channel events are cumulative
+snapshots, so Chat also retains only the latest pending snapshot per animation frame
+and synchronously flushes the terminal snapshot. Model token rate therefore cannot
+enqueue an unbounded chain of parser snapshots or page renders, and coalescing loses no
+channel text. Unmarked output remains ordinary final text if no marker arrives; if it
+precedes a named marker or Gemma 4's bare boundary, it is reclassified as a non-final
+preamble or thinking channel. GGUF inspection promotes a plausible architecture
+`context_length` so Chat can default to the selected model's trained maximum before
+load, expose 256-token steps and exact numeric entry, preserve valid user overrides
+across load-time reinspection, and show the same declared value on the model card.
+This metadata is not a browser-memory guarantee. Inspection also records a bounded
+index of GGUF-declared unknown/control/user-defined/unused tokenizer items. Chat
+validates logprob token IDs against that index, filters the channel dialect it already
+understands, and presents up to 32 unknown/control/user-defined/unused IDs in a closed
+per-response diagnostic disclosure. Counts are coalesced with response rendering,
+overflow is explicit, model text is rendered as text, and no feedback leaves the
+browser (D-029).
+The worker-to-page protocol independently validates every optional special-token
+field and its bounds before runtime or UI code consumes it. A generated TypeScript
+asset manifest is checked alongside the pinned wllama bytes so an asset update cannot
+silently leave stale adapter or browser-test URLs.
 HF 429 responses have a finite full-jitter retry budget and visible waiting state.
 
 On an engine without Web Locks, an in-realm promise queue preserves single-worker
@@ -464,7 +525,9 @@ control-free; their punctuation is not constrained beyond those safety propertie
 current architecture namespaces such as `gemma4-assistant` remain inspectable. Large
 model bodies are not read by the inspector; only the bounded
 prefix is parsed. These are implementation limits, not claims about model
-compatibility. Size and content identity gate promotion; inspection failure is stored
+compatibility. A scalar architecture `context_length` from 256 through 1,048,576 is
+also promoted for runtime configuration; values outside that defensive range remain
+ordinary inspector entries. Size and content identity gate promotion; inspection failure is stored
 as a warning and does not reject those verified bytes. An explicit re-inspect request
 reads the installed OPFS blob, never the network or original local `File`, then updates
 only a still-existing manifest. The runtime adapter remains the authority on actual

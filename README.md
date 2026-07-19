@@ -25,9 +25,9 @@ documentation, directed and reviewed by a human.
 
 ## Status
 
-**M0, M1, and M2 are complete; M3 is next.** Manual Hugging Face/local acquisition,
-verified resumable downloads, managed browser storage, and repeatable best-effort GGUF
-inspection are live — see [docs/plan.md](docs/plan.md).
+**M0, M1, and M2 are complete; M3 is implemented locally and awaiting its live >2 GB
+exit check.** Verified acquisition, managed storage, bounded GGUF splitting, and the
+first measured wllama chat path are available — see [docs/plan.md](docs/plan.md).
 
 ## Develop
 
