@@ -28,6 +28,7 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm runtime:wllama-assets:check
       - run: pnpm test
       - run: pnpm test:e2e
       - run: pnpm license:check

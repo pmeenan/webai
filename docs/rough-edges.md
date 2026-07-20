@@ -25,6 +25,90 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-028: wllama abort polling cannot interrupt an in-flight native result request  (2026-07-19, status: worked-around)
+
+**Environment:** `@wllama/wllama` 3.5.1 / bundled llama.cpp
+`b9640-dd4623a`, source-inspected and exercised with a non-cooperative completion in
+Chrome for Testing 149.0.7827.55 on Ubuntu 24.04.4 LTS/Linux on 2026-07-19.
+**Repro or measurement:** Start streaming, return one partial chunk, then keep the next
+result request pending without observing its `AbortSignal`; press Chat's Stop button.
+Inspect the pinned wrapper's completion loop and worker proxy shutdown. **Observed:**
+The completion loop checks `abortSignal.aborted` only before each awaited `get_result`,
+so an in-flight request must finish before cooperative abort is observed. `wllamaExit()`
+terminates the worker but leaves both queued and callback-waiting proxy promises
+unsettled. The controlled request remained pending indefinitely under the original
+path. **Expected:** An emergency Stop should settle promptly even when generation or a
+native result request does not cooperate. **Impact on WebAI:** The adapter races the
+stream against abort and terminates/invalidates the wllama session. WebAI's pinned ESM
+patch rejects proxy queues during termination, preventing the abandoned stream from
+retaining a promise that can never receive a worker response. Browser coverage verifies
+prompt Stop settles, preserves partial text, exposes `No session`, and enables reload
+(D-039). **Links:** [wllama 3.5.1 completion loop](https://github.com/ngxson/wllama/blob/3.5.1/src/wllama.ts),
+[worker proxy](https://github.com/ngxson/wllama/blob/3.5.1/src/worker.ts).
+
+## RE-027: A thinking template argument has no runtime acknowledgement  (2026-07-19, status: worked-around)
+
+**Environment:** `@wllama/wllama` 3.5.1 / bundled llama.cpp
+`b9640-dd4623a`, source-inspected and exercised through controlled Chrome for Testing
+149.0.7827.55 on Ubuntu 24.04.4 LTS/Linux on 2026-07-19. **Repro or measurement:** Send
+consecutive chat completions with
+`chat_template_kwargs.enable_thinking` set to true or false and inspect the wrapper
+source plus captured request. **Observed:** wllama types and forwards the arbitrary
+template-argument object, but returns no capability or acknowledgement that the loaded
+model's template read `enable_thinking`. Current llama.cpp maintainers confirm that
+templates without relevant support can ignore it. **Expected:** A user-facing toggle
+would ideally have loaded-template support evidence and an effective value, not only a
+requested value. **Impact on WebAI:** Chat calls the control a model-template request,
+warns that unsupported templates may ignore it, and continues displaying any reasoning
+that is generated. The switch is unavailable for the Prompt API, which exposes no such
+request. WebAI does not infer effective support from model-family names or suppress
+reasoning output to simulate success (D-038). **Links:**
+[wllama 3.5.1 completion source](https://github.com/ngxson/wllama/blob/3.5.1/src/wllama.ts),
+[llama.cpp #20196](https://github.com/ggml-org/llama.cpp/issues/20196),
+[D-038](decisions.md).
+
+## RE-026: Hugging Face lineage metadata exposes only immediate, unpinned parents  (2026-07-19, status: worked-around)
+
+**Environment:** Hugging Face public model API and official `huggingface_hub`/model-card
+documentation, queried from Linux on 2026-07-19. **Repro or measurement:** Request
+`sha`, `baseModels`, and `cardData` expansions for
+`unsloth/gemma-4-E2B-it-qat-GGUF`, then repeat for each returned parent. Probe a merge
+model and the plausible `/model-tree`, `/base-models`, `/ancestors`, and `/tree` model
+API routes. **Observed:** Each model-info response returned only immediate parent repo
+IDs and one relation, with no parent commit. Three additional calls were required to
+reach the Gemma root. A merge returned two immediate parents. No documented recursive
+lineage route was found; plausible routes returned 404, and documented `recursive`
+options concern repository files. **Expected:** A website-style full ancestry graph
+would ideally have a bounded endpoint or pinned parent edges. **Impact on WebAI:**
+D-033/D-036 reconstruct only the selected result's ancestry, retain independently
+resolved parent commits as current internal observations, deduplicate/cycle-check the
+graph, and follow branches to terminal ancestors within 32 repositories using two
+concurrent requests and 256-KiB responses. The UI reverses those immediate-parent
+edges into a base-first linked-name tree. Public/open minimal snapshots are cached for
+24 hours. **Links:**
+[Hugging Face model cards](https://huggingface.co/docs/hub/model-cards),
+[`HfApi` reference](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_api),
+[D-033 and D-036](decisions.md).
+
+## RE-025: sqlite-wasm's documented `opfs` namespace probe can disagree with `OpfsDb`  (2026-07-19, status: worked-around)
+
+**Environment:** `@sqlite.org/sqlite-wasm` 3.53.0-build1, Astro/Vite production build,
+Playwright Chromium 150 on Linux, cross-origin-isolated dedicated model worker with
+SharedArrayBuffer and `navigator.storage.getDirectory`. **Repro or measurement:**
+Initialize the package's direct module API in the worker, then require both
+`"opfs" in sqlite3` and `sqlite3.oo1.OpfsDb`; report the selected catalog backend.
+Repeat with only the documented OO1 class probe and perform create/write/page reload/
+worker reload/read against an OPFS database. **Observed:** The combined test selected
+the memory fallback because the top-level `opfs` property was absent, even though
+`oo1.OpfsDb` existed. The class-only probe then persisted a row across reload and
+served it without a second network detail request. **Expected:** The package README's
+sample treats `"opfs" in sqlite3` as the persistence-availability test. **Impact on
+WebAI:** Feature detection uses the API actually consumed—`oo1.OpfsDb`—and still
+falls back to memory on construction or SQL failure. A deterministic production-build
+browser test guards the persistence round trip. **Links:**
+[`@sqlite.org/sqlite-wasm` README](https://github.com/sqlite/sqlite-wasm#readme),
+[SQLite wasm OPFS persistence](https://sqlite.org/wasm/doc/tip/persistence.md).
+
 ## RE-024: Prompt API presence does not imply a usable browser-managed model  (2026-07-19, status: worked-around)
 
 **Environment:** Stable Google Chrome 150.0.7871.128 on Linux, a fresh headless

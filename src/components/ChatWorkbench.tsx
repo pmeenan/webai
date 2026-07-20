@@ -1,5 +1,6 @@
 import {
   Bot,
+  Brain,
   CircleCheck,
   CircleHelp,
   CircleX,
@@ -16,24 +17,24 @@ import {
 import { type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelWorkerEvent } from "../lib/models/protocol";
 import {
-  ModelOperationError,
   type InstalledModelRecord,
   type ModelFailure,
   type ModelInventory,
+  ModelOperationError,
   maximumDeclaredContextTokens,
 } from "../lib/models/types";
 import { ModelWorkerClient } from "../lib/models/worker-client";
 import { finalResponseText } from "../lib/runtimes/channel-parser";
 import {
+  type PromptApiProbe,
   PromptApiRuntimeAdapter,
   promptApiDescriptor,
-  type PromptApiProbe,
 } from "../lib/runtimes/prompt-api";
 import type {
   ChatMessage,
   ModelOutputDiagnostics,
-  ResponseMetrics,
   ResponseChannel,
+  ResponseMetrics,
   RuntimeAdapter,
   RuntimeDescriptor,
   RuntimeId,
@@ -249,6 +250,20 @@ function boundedContextSize(value: number, maximum: number | undefined): number 
   return Math.min(boundedMaximum, Math.max(256, finite));
 }
 
+function contextSizeFromK(value: string, maximum: number | undefined, fallback: number): number {
+  const parsedK = Number(value);
+  if (!Number.isFinite(parsedK) || parsedK <= 0) return boundedContextSize(fallback, maximum);
+  return boundedContextSize(Math.ceil(parsedK) * 1024, maximum);
+}
+
+function contextKValue(tokens: number): string {
+  return String(tokens / 1024);
+}
+
+function contextKLabel(tokens: number): string {
+  return (tokens / 1024).toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
 function channelLabel(name: string): string {
   if (name.toLowerCase() === "thought") return "Thinking";
   return name.replaceAll(/[-_]+/gu, " ").replace(/^./u, (character) => character.toUpperCase());
@@ -346,6 +361,7 @@ export default function ChatWorkbench() {
   const [gpuMode, setGpuMode] = useState<"full" | "partial" | "off">("full");
   const [gpuLayers, setGpuLayers] = useState(8);
   const [contextSize, setContextSize] = useState(2048);
+  const [contextKInput, setContextKInput] = useState("2");
   const [session, setSession] = useState<RuntimeSession | undefined>();
   const [loading, setLoading] = useState(false);
   const [splittingModel, setSplittingModel] = useState(false);
@@ -354,6 +370,7 @@ export default function ChatWorkbench() {
   const [generating, setGenerating] = useState(false);
   const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
   const [prompt, setPrompt] = useState("");
+  const [thinkingEnabled, setThinkingEnabled] = useState(true);
   const [error, setError] = useState<string | undefined>();
   const [status, setStatus] = useState("Loading the managed-model inventory.");
 
@@ -475,7 +492,9 @@ export default function ChatWorkbench() {
       contextModelId.current = selectedContextModelId;
       contextEdited.current = false;
     }
-    setContextSize(boundedContextSize(selectedContextLimit ?? 2_048, selectedContextLimit));
+    const nextContextSize = boundedContextSize(selectedContextLimit ?? 2_048, selectedContextLimit);
+    setContextSize(nextContextSize);
+    setContextKInput(contextKValue(nextContextSize));
   }, [selectedContextLimit, selectedContextModelId]);
 
   const changeModel = (modelId: string) => {
@@ -617,11 +636,12 @@ export default function ChatWorkbench() {
         }
         modelToLoad = refreshed;
       }
-      const effectiveContextSize = boundedContextSize(
-        contextSize,
-        wllamaModelContextLength(modelToLoad),
-      );
+      const modelContextLimit = wllamaModelContextLength(modelToLoad);
+      const effectiveContextSize = contextEdited.current
+        ? contextSizeFromK(contextKInput, modelContextLimit, contextSize)
+        : boundedContextSize(modelContextLimit ?? 2_048, modelContextLimit);
       if (effectiveContextSize !== contextSize) setContextSize(effectiveContextSize);
+      setContextKInput(contextKValue(effectiveContextSize));
       const loaded = await runtime.createSession(
         modelToLoad,
         {
@@ -734,6 +754,7 @@ export default function ChatWorkbench() {
     try {
       await runtime.generate(
         history.map((message) => ({ role: message.role, content: message.content })),
+        runtimeId === "wllama" ? { thinking: thinkingEnabled } : {},
         controller.signal,
         (runtimeEvent) => {
           if (runtimeEvent.type === "text") pendingText += runtimeEvent.text;
@@ -765,7 +786,14 @@ export default function ChatWorkbench() {
       assistantFrame.current = undefined;
       flushAssistantUpdate();
       if (controller.signal.aborted) {
-        setStatus("Generation stopped. The partial response remains visible.");
+        if (runtimeId === "wllama") {
+          setSession(undefined);
+          setStatus(
+            "Generation stopped. Review the partial response before reloading the model to continue.",
+          );
+        } else {
+          setStatus("Generation stopped. Review the partial response before reloading the model.");
+        }
       } else {
         setError(failureMessage(failure));
         setStatus(`${runtime.descriptor.displayName} generation failed.`);
@@ -932,29 +960,33 @@ export default function ChatWorkbench() {
                   />
                 </label>
                 <label>
-                  Context tokens
+                  Context (K tokens)
                   <input
                     type="number"
-                    min="256"
-                    step="256"
-                    max={selectedContextLimit ?? maximumDeclaredContextTokens}
-                    value={contextSize}
+                    min={Math.min(1, (selectedContextLimit ?? maximumDeclaredContextTokens) / 1024)}
+                    step="any"
+                    max={(selectedContextLimit ?? maximumDeclaredContextTokens) / 1024}
+                    value={contextKInput}
                     onChange={(event) => {
                       contextModelId.current = selectedContextModelId;
                       contextEdited.current = true;
-                      setContextSize(
-                        Math.min(
-                          selectedContextLimit ?? maximumDeclaredContextTokens,
-                          boundedInteger(event.target.value, 256, selectedContextLimit ?? 2048),
-                        ),
+                      setContextKInput(event.target.value);
+                    }}
+                    onBlur={() => {
+                      const nextContextSize = contextSizeFromK(
+                        contextKInput,
+                        selectedContextLimit,
+                        contextSize,
                       );
+                      setContextSize(nextContextSize);
+                      setContextKInput(contextKValue(nextContextSize));
                     }}
                     disabled={selectedModel === undefined || loading || generating}
                   />
                   <span className="field-help">
                     {selectedContextLimit === undefined
-                      ? "No model-declared maximum; using a 2,048-token fallback. Type an exact value or use 256-token steps."
-                      : `Model-declared maximum: ${selectedContextLimit.toLocaleString()}. Type an exact value or use 256-token steps. Large contexts can require substantial browser memory.`}
+                      ? "No model-declared maximum; using a 2 K-token fallback. 1 K = 1,024 tokens. Manual values round up to the next whole K."
+                      : `Model-declared maximum: ${contextKLabel(selectedContextLimit)} K tokens. 1 K = 1,024 tokens. Manual values round up to the next whole K. Large contexts can require substantial browser memory.`}
                   </span>
                 </label>
               </div>
@@ -1281,9 +1313,33 @@ export default function ChatWorkbench() {
               disabled={session === undefined || generating}
             />
             <div className="chat-composer-actions">
-              <p>
-                <Gauge aria-hidden="true" /> {activeView.metricsHelp}
-              </p>
+              <div className="chat-composer-context">
+                <label className="chat-thinking-toggle">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    aria-label="Thinking"
+                    aria-describedby="chat-thinking-help"
+                    aria-checked={runtimeId === "wllama" && thinkingEnabled}
+                    checked={runtimeId === "wllama" && thinkingEnabled}
+                    onChange={(event) => setThinkingEnabled(event.target.checked)}
+                    disabled={runtimeId !== "wllama" || generating}
+                  />
+                  <Brain aria-hidden="true" />
+                  <span>Thinking</span>
+                  <strong>
+                    {runtimeId === "wllama" ? (thinkingEnabled ? "On" : "Off") : "Unavailable"}
+                  </strong>
+                </label>
+                <p id="chat-thinking-help">
+                  {runtimeId === "wllama"
+                    ? "Sent with each prompt. Compatible model chat templates honor the request; others may ignore it."
+                    : "Chrome's Prompt API does not expose a thinking control."}
+                </p>
+                <p>
+                  <Gauge aria-hidden="true" /> {activeView.metricsHelp}
+                </p>
+              </div>
               <Button
                 variant="primary"
                 type={generating ? "button" : "submit"}

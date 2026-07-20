@@ -1,18 +1,19 @@
-import { ModelOperationError } from "../models/types";
-import type { ModelFailure } from "../models/types";
 import { runBoundedOperation } from "../bounded-operation";
+import type { ModelFailure } from "../models/types";
+import { ModelOperationError } from "../models/types";
 import {
   isPromptApiAvailability,
+  type PromptApiAvailability,
   promptApiProbeTimeoutMs,
   promptApiTextOptions,
-  type PromptApiAvailability,
 } from "../prompt-api-surface";
 import type {
   GenerationEvent,
+  GenerationOptions,
   PromptApiRuntimeDescriptor,
   PromptApiRuntimeSession,
-  RuntimeLoadEvent,
   RuntimeAdapter,
+  RuntimeLoadEvent,
 } from "./types";
 
 export type { PromptApiAvailability } from "../prompt-api-surface";
@@ -398,6 +399,7 @@ export class PromptApiRuntimeAdapter implements RuntimeAdapter {
 
   async generate(
     messages: readonly { readonly role: "user" | "assistant"; readonly content: string }[],
+    options: GenerationOptions,
     signal: AbortSignal,
     onEvent: (event: GenerationEvent) => void,
   ): Promise<void> {
@@ -406,6 +408,13 @@ export class PromptApiRuntimeAdapter implements RuntimeAdapter {
     const latestUserMessage = messages.findLast((message) => message.role === "user");
     if (runtime === undefined || session === undefined || latestUserMessage === undefined) {
       throw failure("generate", "Load Gemini Nano before starting a chat.");
+    }
+    if (options.thinking !== undefined) {
+      throw failure(
+        "generate",
+        "Chrome's Prompt API does not expose a thinking control. Use its runtime default.",
+        "unsupported",
+      );
     }
     const started = performance.now();
     let firstOutputAt: number | undefined;

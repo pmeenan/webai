@@ -128,8 +128,9 @@ Repeat the array with the dummy `Authorization` header merged into each request.
 the page from a trustworthy localhost URL with the two selected COOP/COEP response
 headers; verify `crossOriginIsolated` before running the fetches. The dummy token
 deliberately proves that the header preflight and public redirect path are accepted;
-it does **not** prove authenticated access to a gated model. A valid-token gated
-browser test remains an M5 gate because no credential was available for this spike.
+it does **not** prove authenticated access to a gated model. D-042 later made this a
+historical hosting measurement only: WebAI sends anonymous Hugging Face requests and
+does not support gated/private acquisition.
 
 The page reported `crossOriginIsolated: true` and exposed `SharedArrayBuffer` while
 all four paths succeeded under `COEP: require-corp`. A separate response-header probe

@@ -170,6 +170,7 @@ describe("PromptApiRuntimeAdapter", () => {
         { role: "assistant", content: "old answer" },
         { role: "user", content: "new question" },
       ],
+      {},
       new AbortController().signal,
       (event) => events.push(event),
     );
@@ -195,6 +196,21 @@ describe("PromptApiRuntimeAdapter", () => {
     expect(metrics.metrics.decodeTokensPerSecond).toBeUndefined();
     expect(metrics.metrics.timeToFirstOutputMs).toEqual(expect.any(Number));
     expect(metrics.metrics.timeToFirstTokenMs).toBeUndefined();
+
+    for (const thinking of [false, true])
+      await expect(
+        adapter.generate(
+          [{ role: "user", content: "try explicit thinking" }],
+          { thinking },
+          new AbortController().signal,
+          () => undefined,
+        ),
+      ).rejects.toMatchObject({
+        failure: {
+          code: "unsupported",
+          message: expect.stringContaining("does not expose a thinking control"),
+        },
+      });
 
     await adapter.dispose();
     expect(session.destroy).toHaveBeenCalledOnce();
@@ -256,6 +272,7 @@ describe("PromptApiRuntimeAdapter", () => {
     await adapter.createSession();
     const generation = adapter.generate(
       [{ role: "user", content: "hello" }],
+      {},
       new AbortController().signal,
       () => undefined,
     );
@@ -269,6 +286,7 @@ describe("PromptApiRuntimeAdapter", () => {
     await expect(
       adapter.generate(
         [{ role: "user", content: "hello" }],
+        {},
         new AbortController().signal,
         () => undefined,
       ),

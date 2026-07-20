@@ -226,10 +226,14 @@ multi-GB quants that make splitting mandatory (D-028).
 - [x] Streaming chat UI over the adapter, including incremental explicit-channel
       parsing: active intermediate channels remain open, collapse on completion, and
       stay expandable while final text remains visible; unmarked Gemma thinking before
-      a bare boundary is not duplicated into the final response (RE-019, RE-021).
+      a bare boundary is not duplicated into the final response. An On/Off Thinking
+      switch is snapshotted per wllama prompt and forwarded to compatible model chat
+      templates without conflating the request with output visibility; Chrome's Prompt
+      API exposes no equivalent control (D-038, RE-019, RE-021, RE-027).
 - [x] Model-declared trained context appears in the manager and becomes Chat's default;
-      the numeric control steps by 256 while accepting exact manual values and
-      preserving valid overrides across metadata refresh. Output
+      the numeric control uses K-token units (1 K = 1,024), rounds positive fractional
+      entry upward to the next whole K, and preserves valid overrides across metadata
+      refresh (D-037). Output
       has no arbitrary token ceiling and remains bounded by EOS/configured context.
 - [x] Visible staged model-load UI: determinate progress for runtime-required splitting
       and honest indeterminate phases while wllama loads local `Blob` files because the
@@ -245,7 +249,10 @@ multi-GB quants that make splitting mandatory (D-028).
       model-declared special tokens outside the active parser dialect in a closed,
       copyable per-response disclosure (D-029, RE-022).
 - [x] Long-running split preparation and generation have explicit stop controls;
-      adapter disposal during load exits the in-flight wllama instance.
+      adapter disposal during load exits the in-flight wllama instance. Because pinned
+      wllama only polls abort between native result calls, generation Stop immediately
+      terminates its worker, preserves partial output, invalidates the session, and
+      enables an explicit reload (D-039, RE-028).
 
 *(Core implementation landed locally 2026-07-18. The feasibility experiment selected
 D-009's split-after-verification fallback; D-028 records the pinned wasm/wllama
@@ -282,18 +289,45 @@ browser path and milestone exit criteria on 2026-07-19.)*
 GGUF-on-wllama and Gemini Nano, on a browser with the API; on other browsers the
 option is visibly gated with an explanation.
 
-### M5 — Model browsing  `pending`
+### M5 — Model browsing  `complete`
 
 Goal: discovery without leaving the app.
 
-- [ ] HF search/browse with D-013's two-stage in-browser-suitability filters (size,
-      format, quant, task): server-filter candidate pages, then bounded/cached
-      revision-pinned file enrichment with explicit pending/unknown states.
-- [ ] Basic suitability hints (file size vs. quota/memory); full capability-based
+- [x] HF search/browse with D-013's two-stage in-browser-suitability filters (size,
+      current runtime/format, nominal quant bits, declared capabilities, and minimum
+      context): server-filter candidate pages, then bounded/cached revision-pinned
+      detail enrichment with explicit match/needs-verification/excluded/unknown states.
+- [x] Basic suitability hints (file size vs. quota/memory); full capability-based
       filtering stays in M10.
-- [ ] Model license + gating status surfaced pre-download; HF token for gated models
-      (stored locally only). Before this path ships, verify a valid-token gated model
-      and its signed redirect in a browser; D-012 proved Authorization preflight only.
+- [x] Model license + access status surfaced pre-download; public, ungated Hugging Face
+      models are the explicit acquisition boundary and restricted repositories are
+      excluded without a credential path (D-042).
+
+*(Core implementation landed locally 2026-07-19. D-031 records bounded automatic
+pagination and two-wide commit-pinned enrichment; D-032 adds the bounded anonymous
+SQLite/OPFS detail catalog, exact nominal-bit and tri-state declared-metadata filters,
+and the broad declared family/architecture facet → declared base model → repository
+variant → static detail browser, ordered by exact, missing-aware aggregate 30-day Hub
+download counts. D-033 adds exact downloaded-state rollups to all four tiers and a
+selected-result-only, progress-reporting 32-repository ancestry graph with a
+separate public lineage cache; parent commits are explicitly current observations.
+D-034 shows the exact reported 30-day count on each repository-variant row while
+retaining metadata-verification state in the selected detail.
+D-035 raises the self-imposed broad-search ceiling from 32 pages / 256 candidates to
+128 pages / 1,024 candidates without raising the two-request enrichment concurrency;
+a separate 32-MiB retained-record budget bounds the worker result and structured clone.
+D-036 makes capability selection explicitly AND, excludes contradictory declared
+primary tasks, orders confirmed groups ahead of unverified groups, equalizes the four
+desktop panel heights, and renders selected ancestry base-first to the 32-node boundary
+using linked repository names only.
+D-040 preserves every fully processed, bounded result when Stop aborts a long pass or
+429 retry wait and labels that snapshot partial. D-042 narrows acquisition to anonymous
+public/ungated repositories, removes the credential surface and stored token during the
+version-3 database upgrade, and excludes known restricted results before enrichment.
+Deterministic browser coverage finds and downloads a size/quant match beyond the first
+candidate page, verifies anonymous cache reuse, and proves restricted candidates do not
+trigger detail requests. The owner completed the live public workflow—search, download,
+and inference—on 2026-07-19, satisfying the milestone exit criteria.)*
 
 **Exit criteria:** a user finds, evaluates, and downloads a suitable model entirely
 in-app; pagination/enrichment can find a size/quant match beyond the first candidate

@@ -15,6 +15,7 @@ export default defineConfig({
   integrations: [react()],
   vite: {
     plugins: [tailwindcss()],
+    optimizeDeps: { exclude: ["@sqlite.org/sqlite-wasm"] },
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
   },

@@ -13,7 +13,7 @@ import { ModelOperationError, modelSchemaVersion } from "./types";
 import { createSha256 } from "./hashing";
 
 const databaseName = "webai-v1";
-const databaseVersion = 1;
+const databaseVersion = 3;
 const rootPath = ["webai", "v1"] as const;
 
 type StoreName = "models" | "jobs" | "blobs";
@@ -146,14 +146,24 @@ function isDownloadJob(job: AcquisitionJobRecord): job is DownloadJobRecord {
 }
 
 export function openModelDatabase(): Promise<IDBDatabase> {
-  databasePromise ??= new Promise<IDBDatabase>((resolve, reject) => {
+  if (databasePromise !== undefined) return databasePromise;
+  let rejected = false;
+  const opening = new Promise<IDBDatabase>((resolve, reject) => {
+    const rejectOpening = (failure: ModelOperationError) => {
+      rejected = true;
+      reject(failure);
+    };
     if (typeof indexedDB === "undefined") {
-      reject(storageFailure("IndexedDB is unavailable, so model manifests cannot be stored."));
+      rejectOpening(
+        storageFailure("IndexedDB is unavailable, so model manifests cannot be stored."),
+      );
       return;
     }
     const request = indexedDB.open(databaseName, databaseVersion);
     request.addEventListener("upgradeneeded", () => {
       const database = request.result;
+      if (database.objectStoreNames.contains("credentials"))
+        database.deleteObjectStore("credentials");
       for (const store of ["models", "jobs", "blobs"] as const) {
         if (!database.objectStoreNames.contains(store))
           database.createObjectStore(store, { keyPath: "id" });
@@ -161,22 +171,38 @@ export function openModelDatabase(): Promise<IDBDatabase> {
     });
     request.addEventListener("success", () => {
       const database = request.result;
-      database.addEventListener("versionchange", () => database.close());
+      if (rejected) {
+        database.close();
+        return;
+      }
+      database.addEventListener("versionchange", () => {
+        database.close();
+        if (databasePromise === opening) databasePromise = undefined;
+      });
       resolve(database);
     });
     request.addEventListener(
       "blocked",
-      () => reject(storageFailure("A different WebAI tab is blocking the model database upgrade.")),
+      () =>
+        rejectOpening(
+          storageFailure("A different WebAI tab is blocking the model database upgrade."),
+        ),
       { once: true },
     );
     request.addEventListener(
       "error",
       () =>
-        reject(storageFailure("The model manifest database could not be opened.", request.error)),
+        rejectOpening(
+          storageFailure("The model manifest database could not be opened.", request.error),
+        ),
       { once: true },
     );
   });
-  return databasePromise;
+  databasePromise = opening;
+  void opening.catch(() => {
+    if (databasePromise === opening) databasePromise = undefined;
+  });
+  return opening;
 }
 
 async function allRecords<T>(storeName: StoreName): Promise<T[]> {

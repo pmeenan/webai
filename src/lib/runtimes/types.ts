@@ -143,10 +143,19 @@ export type GenerationEvent =
   | { readonly type: "warning"; readonly warning: RuntimeWarning }
   | { readonly type: "metrics"; readonly metrics: ResponseMetrics };
 
+export interface GenerationOptions {
+  /**
+   * Ask a model-owned chat template to enable or disable thinking. Omitted means
+   * the runtime's default; adapters must not imply support when they cannot pass it.
+   */
+  readonly thinking?: boolean;
+}
+
 export interface RuntimeAdapter {
   readonly descriptor: RuntimeDescriptor;
   generate(
     messages: readonly { readonly role: "user" | "assistant"; readonly content: string }[],
+    options: GenerationOptions,
     signal: AbortSignal,
     onEvent: (event: GenerationEvent) => void,
   ): Promise<void>;

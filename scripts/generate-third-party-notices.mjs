@@ -20,9 +20,13 @@ const nonTraversedShippedRoots = new Set(["@astrojs/react", "astro", "tailwindcs
 // Build inputs or generators whose attributed data/code is reflected in output.
 const attributedBuildPackages = ["caniuse-lite", "lightningcss", "rolldown", "vite"];
 
-// These packages declare MIT but omit the license file from their npm tarballs.
+// These packages declare the listed permissive license but omit its text from their npm tarball.
 // Each fallback is the upstream repository's license, checked 2026-07-18.
 const fallbackLicenses = new Map([
+  [
+    "@sqlite.org/sqlite-wasm",
+    path.join(scriptDirectory, "license-fallbacks/sqlite-wasm-Apache-2.0.txt"),
+  ],
   ["@wllama/wllama", path.join(scriptDirectory, "license-fallbacks/wllama-MIT.txt")],
   ["@wllama/wllama-compat", path.join(scriptDirectory, "license-fallbacks/wllama-MIT.txt")],
   [
@@ -231,7 +235,7 @@ export function generateThirdPartyNotices() {
     licenseText: normalizeLicenseText(
       fs.readFileSync(path.join(scriptDirectory, "license-fallbacks/wllama-MIT.txt"), "utf8"),
     ),
-    name: "wllama browser response drain (modified ESM bundle)",
+    name: "wllama browser response and lifecycle patches (modified ESM bundle)",
     version: "3.5.1 / webai-1",
   });
 

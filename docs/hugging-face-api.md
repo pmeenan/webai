@@ -50,7 +50,7 @@ is the clearest public inventory of model-list parameters. Direct browser reques
 | Model ID/name substring | `search`; `author` | Search does not promise model-card or general full-text matching and is not a compatibility guarantee. |
 | Task | `pipeline_tag`, or a task tag via `filter` | Validate missing/inconsistent publisher metadata; model/runtime compatibility is separate. |
 | Format/library | One or more tag/library values via `filter` (for example `gguf`) | These are Hub metadata tags, not inspected file truth. Confirm the repo tree and file extension. |
-| Gating | `gated` | M5 still needs a valid-token gated browser test before this path ships. |
+| Access | `gated`, `private` | Exclude any repository not explicitly public and ungated; WebAI has no authenticated acquisition path (D-042). |
 | Parameter count | `num_parameters` range | Parameter count is not download bytes or runtime memory. |
 | Ordering | `sort` by `created_at`, `downloads`, `last_modified`, `likes`, or `trending_score`; bounded `limit` | Validate and follow the opaque cursor URL from the response's `Link: ...; rel="next"`; never construct or decode it. |
 | Response shape | `expand` for selected properties, or the larger `full` response | Ask only for fields the view uses and enforce response limits. Expansion data can itself contain large untrusted strings. |
@@ -79,10 +79,13 @@ queries, and coalesce identical in-flight requests. Enrich only the candidate ba
 currently being evaluated (or a selected repo), with a low concurrency limit; cache
 results by `(repo ID, SHA)` so back/forward navigation and repeated filters do not
 spend API quota. When client-side filters reject most of a batch, progressively follow
-search cursors and enrich further bounded batches until the display target is filled,
-the user stops/loads more, or results end. The UI reports that progress and must
+search cursors and enrich further bounded batches until results end, the user stops,
+or D-035's explicit 128-page/1,024-candidate safety boundary is reached. Pagination is
+automatic rather than a load-more UI; a boundary-limited result tells the user to
+narrow the filters. The UI reports that progress and must
 distinguish “not inspected yet” from “does not match” rather than silently dropping
-unknowns or implying that a partially enriched result set is exhaustive.
+unknowns or implying that a partially enriched result set is exhaustive. Retained
+visible/unknown records also stop at a shared 32-MiB serialized-byte budget.
 
 `Link` itself is remote metadata. Parse it with the URL API and follow `rel="next"`
 only when it remains HTTPS on the expected `huggingface.co` origin and models-list
@@ -225,8 +228,9 @@ read the documented seconds-to-reset value.
 
 The browser policy is consequently reactive: pause the affected request class on
 429; retry idempotent GETs with bounded exponential full jitter and a finite automatic
-retry budget; expose waiting/retry/cancel state; and honor a readable standards-based
-delay header if Hugging Face exposes one in the future. Search debouncing, request
+retry budget; expose waiting/retry/cancel state; and honor either standards-based
+`Retry-After` form (delta-seconds or HTTP-date), capped at 30 seconds, if Hugging Face
+exposes one. Search debouncing, request
 coalescing, cursor pagination, SHA-keyed caching, and resolver use for actual bytes
 reduce API calls without weakening freshness or integrity.
 
@@ -257,11 +261,10 @@ the transient signed URL.
 
 The range/redirect/browser reproductions are kept in RE-005 and the hosting spike to
 avoid duplicating transient signed URLs here. The spike deliberately did not exhaust
-quota to manufacture a 429, did not have a valid gated-model token, and did not
-download a complete large model. Those are unnecessary or inappropriate for the M0
-design decision; M2 tests interrupted/full hashing against fixtures and a real public
-artifact, while M5's exit gate repeats the authenticated browser path with a valid
-token.
+quota to manufacture a 429 or download a complete large model. Those were unnecessary
+or inappropriate for the M0 design decision; M2 tests interrupted/full hashing against
+fixtures and a real public artifact. D-042 later removed authenticated acquisition from
+product scope.
 
 ## Implementation gates
 
@@ -319,6 +322,79 @@ uses the same bounded inspector but labels the file as an MTP speculative-decodi
 companion. RE-014 records why its hyphenated architecture metadata required removing
 WebAI's narrower, non-upstream key-character assumption.
 
+### M5 revalidation (2026-07-19)
+
+The focused discovery pass rechecked the current official `list_models`, model-card,
+gated-model, token, tree, and rate-limit documentation plus live API behavior. Minimal
+list expansion requires one query parameter per property, such as
+`expand=sha&expand=gated`; a comma-separated expansion returned HTTP 400. The current
+gate field is `false`, `"auto"`, `"manual"`, or absent. License remains publisher
+model-card metadata; the compact bounded path extracts only a single `license:` tag
+identifier and uses bounded `cardData.license_name` when that identifier is the generic
+`other`. Search `Link` remained readable to an isolated browser while rate-limit
+headers remained filtered. Revision-pinned model info still returned exact per-GGUF
+size and LFS SHA-256. D-031 recorded the initial 32-page/eight-candidate-per-page,
+two-concurrent-enrichment implementation bounds; D-035 raises only the page/result
+ceiling to 128 pages / at most 1,024 candidates while retaining two-wide enrichment,
+per-repository bounds, cross-page repository deduplication, and exact
+requested/returned commit equality.
+The official `ModelInfo.downloads` field is the repository's last-30-day count. Hub
+[download-count documentation](https://huggingface.co/docs/hub/models-download-stats)
+clarifies that this is request-based rather than unique users: every GET/HEAD for a
+GGUF file counts, and cloning a repository with multiple GGUF files can double-count.
+WebAI therefore uses exact, missing-aware aggregates only as a popularity ordering
+signal.
+Filename quantization hints cover multi-digit float forms such as F16/BF16/F32 as well
+as Q/IQ/TQ/MXFP families; repositories that parse successfully but contain no usable
+GGUF choice are confirmed exclusions rather than retryable unknowns.
+
+A same-day expanded-metadata pass checked the owner's requested local catalog and
+lineage/filter design. Revision-pinned `blobs=true` model info accepted repeated
+expansions for `baseModels`, `cardData`, `config`, `gguf`, siblings, and the other
+documented model-info fields in one bounded response. On
+`unsloth/gemma-4-E2B-it-qat-GGUF`, it returned a typed `quantized` parent and
+`gguf.context_length=131072`; `gguf.total` remained parameter count rather than bytes.
+Search filters are ANDed, so strict server capability tags would create false negatives.
+Official Gemma 4 E2B metadata demonstrated the problem: top-level and
+`transformersInfo` tasks differed, and official card-documented thinking/tool/audio
+capabilities were absent from common filter tags. M5 therefore uses server search only
+as a candidate pass, then applies declared capability/context evidence locally with a
+needs-verification state. Capability checkboxes are AND requirements. Missing
+supplemental evidence never means unsupported, but a declared primary `pipeline_tag`
+that contradicts a selected primary capability is a confirmed exclusion (for example,
+Automatic Speech Recognition versus selected Text Generation). Ordinary tags cannot
+mask that contradiction and tag-only task evidence remains unverified. Confirmed groups sort
+ahead of verification-only groups before popularity is compared.
+
+D-032 persists entire bounded, explicitly public-and-open anonymous revision responses
+in worker-owned SQLite/OPFS
+so future local fields/indexes can reuse data that the present view does not normalize.
+Rows are immutable-commit keyed/current-repo bounded, reparsed on every read, and
+evicted at 512 rows or 64 MiB. Authenticated bodies are never persisted. Immediate
+lineage prefers structured `baseModels`, then bounded model-card `base_model`, then
+exact tags; it does not infer family names. D-033 keeps ordinary candidate enrichment
+non-recursive but expands the selected result's ancestry by repeatedly requesting each
+immediate parent. The API supplies no parent commit, so fetched parent commits remain
+current observations internally rather than historical provenance. Traversal follows
+each branch to a terminal ancestor or the 32-repository boundary, with 16 parents per
+node, two concurrent requests, cycle detection, and visible progress/Stop. The UI
+reverses child-to-parent edges into a base-first linked-name tree, renders only the 32
+admitted nodes, and warns separately about failed or omitted ancestry. Minimal public/open current-parent responses use a separate
+24-hour SQLite lineage table under the existing shared catalog budget and are capped
+at 256 KiB each / less than 8 MiB per maximum traversal. A production-build Chromium test persisted one full-detail row
+across a page and worker reload and avoided a second revision-info request.
+
+Deterministic worker/browser tests cover repeated server filters, a quant/size match
+found beyond an initially nonmatching page, immutable-SHA enrichment, hostile cursor
+origins/paths/credentials/fragments, restricted candidates being excluded before
+enrichment, authoritative pinned-access rechecks, license/gate display, version-3
+credential-store deletion, and the absence of Authorization on revision requests. The
+discovered artifact then runs through the unchanged range/integrity acquisition path.
+A production-origin Chromium check with dummy Authorization plus Range on a public
+commit-pinned artifact remains historical hosting evidence: it followed the signed
+redirect and returned the exact requested 16-byte HTTP 206. D-042 makes that header
+path unsupported by the product.
+
 - **M2:** recheck the model-info/tree response shape and CORS; fixture-test hostile
   metadata, pagination, shard grouping, and the format-aware classifier that separates
   weight artifacts/shards from known sidecar filename markers. Filenames/tags remain
@@ -329,7 +405,7 @@ WebAI's narrower, non-upstream key-character assumption.
   Git-blob identity framing, and promotion visibility. Run at least one complete
   public LFS/Xet artifact through the measured path.
 - **M5:** recheck search parameters, cursor behavior, current rate-limit/CORS policy,
-  and quant/file naming assumptions. Test a valid-token gated repo and signed redirect
-  in an isolated browser before token support ships.
+  quant/file naming assumptions, anonymous signed redirects, and public/ungated access
+  enforcement.
 - **M1/live deploy:** repeat the smaller HF CORS probe from the production origin as
   required by D-012; it remains the deployment check for external-policy drift.

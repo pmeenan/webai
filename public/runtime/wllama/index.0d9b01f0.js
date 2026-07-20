@@ -1419,6 +1419,10 @@ var ProxyToWorker = class {
     return __async(this, null, function* () {
       if (this.worker) {
         this.worker.terminate();
+        // WebAI patch: terminating a busy worker cannot produce callback messages,
+        // so reject its queued promises instead of leaving generation hung forever.
+        this.abort("Worker terminated.", "");
+        this.worker = void 0;
       }
     });
   }

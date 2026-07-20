@@ -23,6 +23,603 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-042: Hugging Face acquisition is anonymous and public-only  (2026-07-19, status: accepted)
+
+**Decision:** WebAI searches, inspects, resolves, and downloads only Hugging Face
+repositories that the Hub explicitly reports as public and ungated. Every Hub request
+is anonymous. Known private or gated candidates are excluded before revision-detail
+enrichment; a pinned detail response is authoritative and is rejected if it is private,
+gated, or does not explicitly confirm public/open access. Restricted repositories do
+not appear as downloadable unknowns and WebAI does not offer a token input or an
+authenticated fallback.
+
+The model database upgrades to version 3 and deletes the retired `credentials` object
+store. Credential requests/events are removed from worker protocol version 5, and the
+worker no longer reads, validates, broadcasts, or attaches Hugging Face tokens. A
+legacy partial job whose stored source explicitly identifies restricted access cannot
+resume and may be discarded; already installed local bytes are not deleted because
+using them does not access Hugging Face.
+
+**Context:** The product owner narrowed the acquisition boundary after completing the
+intended M5 public-model workflow: search, download, and inference were successfully
+tested, while gated/private acquisition was judged unnecessary for this tool. Removing
+authentication also eliminates secret persistence, cross-tab credential coordination,
+entitlement ambiguity, and the outstanding valid-token live gate without weakening
+the public-model use case.
+
+**Consequences:** License and access metadata remain visible provenance, but access
+labels explain exclusion rather than invite authentication. The disposable metadata
+catalog contains only explicitly public/open anonymous responses and can use one entry
+per repository/commit without an authorization dimension. M5's exit criteria are
+satisfied by the completed public workflow. This decision supersedes the credential,
+authenticated fallback, and gated-download portions of D-031 and the gated-model
+feature verdict in D-010; historical CORS measurements with dummy Authorization remain
+evidence about hosting behavior, not a supported product path.
+
+**Reopen if:** Public-only acquisition no longer covers the product's target models and
+the owner explicitly accepts the security, entitlement, storage, synchronization, and
+live-browser verification costs of restoring authenticated access.
+
+## D-041: Discovery producers must satisfy worker protocol bounds  (2026-07-19, status: accepted)
+
+**Decision:** Every model-discovery producer applies the same exported artifact bounds
+as the page/worker protocol before publishing a repository: at most 256 files in one
+download choice, including an optional MTP companion, and at most 128 characters in a
+quantization label. An overlong filename-derived quantization hint becomes the neutral
+`GGUF` label; a shard set over the file bound is rejected with an actionable metadata
+failure; and a choice already at the file bound does not advertise an MTP companion.
+The download UI repeats the combined-file guard as defense in depth. A terminal client
+protocol failure terminates its worker and ignores all later events rather than only
+rejecting pending promises.
+
+The disposable Hugging Face SQLite catalog reads its schema-version marker on open.
+A missing or unknown version drops and recreates the derived catalog instead of
+running current statements against an unknown layout. Model and lineage rows continue
+to share one 512-row/64-MiB least-recently-used budget.
+
+**Context:** Fix-pass review found three ways that otherwise valid Hub filenames/shard
+sets could produce an event accepted by discovery code but rejected by the protocol,
+turning one unusual repository into a terminal failure for the long-lived Models
+worker. It also found that the client latched terminal state without stopping ongoing
+worker activity and that the catalog wrote but never consulted `schema_version`.
+Controlled browser tests now cover the producer/protocol boundary at 256 files, the
+MTP combination, hostile quantization suffixes, terminal worker shutdown, valid
+oversized cache JSON, lineage cancellation, schema selection, and shared catalog
+pruning.
+
+**Consequences:** Remote metadata cannot make discovery emit a structurally invalid
+worker event through these fields. Extremely large shard sets remain visible as an
+actionable repository-metadata failure rather than becoming partially downloadable.
+Unknown catalog versions lose only refetchable public metadata, never installed models,
+jobs, or chat state.
+
+**Reopen if:** the worker protocol raises its artifact limits together with measured
+message/memory/download support, MTP becomes a separately scheduled artifact, or a
+future catalog migration needs to preserve data that is no longer cheaply refetchable.
+
+## D-040: Stopped discovery publishes its collected result snapshot  (2026-07-19, status: accepted; credential-context provisions superseded by D-042)
+
+**Decision:** User-initiated Stop ends Hugging Face discovery with a normal, bounded
+HuggingFace browse result containing every fully processed candidate accumulated before
+the abort. The result is marked truncated with reason stopped, passes the same
+worker-protocol validation and 32-MiB aggregate record budget as a completed search,
+and remains navigable in the hierarchical result browser. The UI labels it as a partial
+snapshot and invites the user to run the search again to continue.
+Publishing that snapshot must not create new Hub traffic: reported ancestry remains
+visible as declared immediate-parent metadata, but the selected detail does not
+automatically expand it until a complete search or later explicit search refresh.
+
+Only an abort of the browse request's explicit signal becomes a partial result.
+Unrelated AbortError failures, including a credential-generation recheck, continue to
+propagate. Credential changes still invalidate the page sequence and clear or ignore
+results tied to the previous authorization context.
+Browse and lineage retry events carry distinct protocol phases and are delivered to
+the page only while their request ID is still active. Cancellation is rechecked after
+disposing a 429 response body and before a retry notice is emitted.
+
+**Context:** During reactive 429 backoff, Stop correctly aborted the wait but
+browseHuggingFaceModels discarded its local match/unknown/excluded accumulators by
+throwing. The page also incremented its browse sequence before the worker settled,
+ensuring no terminal result could be accepted. A controlled Chromium search now
+enriches one matching repository, receives a 429 on the next cursor page, stops during
+the exposed retry wait, and verifies that the collected repository appears immediately.
+RE-006 already records why Hub rate limiting must be handled reactively.
+
+**Consequences:** Long searches retain useful work when users stop because of
+throttling or elapsed time. At most the currently unresolved two-candidate enrichment
+batch is absent; only batches already incorporated into the bounded accumulator are
+claimed as inspected. Starting a new search or changing credentials still makes a late
+partial snapshot stale through the existing sequence guard.
+
+**Reopen if:** discovery gains durable resumable cursor state, the Hub provides a bulk
+snapshot API, or partial batches can be admitted without weakening exact inspected
+counts and result-size bounds.
+
+## D-039: Stopping wllama generation disposes the active session  (2026-07-19, status: accepted)
+
+**Decision:** Stop must settle the visible wllama generation immediately even when the
+engine is inside a native result request. The adapter races stream consumption against
+the request's abort signal. On abort it terminates wllama's dedicated worker, clears
+the active runtime/session, rejects the request as aborted, flushes any buffered text,
+and tells the user to reload the model before continuing. The Prompt API keeps its
+session because its browser-owned streaming API already settles its own abort path.
+
+The self-hosted wllama ESM transformation also rejects all queued and in-flight proxy
+promises when `wllamaExit()` terminates the worker. The source-shape assertion and
+content hash cover this lifecycle patch together with D-029's response-drain patch.
+
+**Context:** Source inspection and a controlled Chromium reproduction on 2026-07-19
+showed that wllama 3.5.1 observes `abortSignal` only between awaited `get_result`
+requests. Its worker termination path did not reject the callback promises whose
+worker could no longer answer. A deliberately non-cooperative completion therefore
+left Chat in its generating state after the user pressed Stop. The wrapper exposes no
+native per-completion interrupt. RE-028 records the measured behavior.
+
+**Consequences:** Stop is bounded by page-side worker termination rather than a model's
+willingness to yield. Partial output remains visible and is marked stopped. Releasing
+the worker also releases model memory, so continuing requires an explicit model reload;
+the UI shows `No session`, disables the composer, and enables Load model. The detached
+stream cannot leak an unresolved proxy task because patched worker exit rejects its
+queues. This prioritizes a reliable emergency stop over preserving a multi-gigabyte
+loaded session.
+
+**Reopen if:** wllama exposes a measured native completion-cancel operation that
+settles an in-flight result call while preserving a valid model/KV session, or another
+runtime can prove an equally bounded session-preserving path.
+
+## D-038: Thinking is an explicit, model-template request per prompt  (2026-07-19, status: accepted)
+
+**Decision:** Chat exposes an On/Off Thinking switch for wllama conversations. The
+selection persists while the in-memory conversation is open, is snapshotted when each
+prompt is sent, and can change before the next prompt without reloading the model.
+The adapter passes the exact boolean as
+`chat_template_kwargs.enable_thinking` on that completion. Thinking defaults On.
+The control is locked during an active generation so its visible state cannot diverge
+from the request already in flight.
+
+This is labelled as a request, not a capability guarantee. A model chat template that
+does not consume `enable_thinking` may ignore either setting. The pinned
+`reasoning_format: none` load option remains independently responsible for keeping any
+generated reasoning observable in the declared content stream; it does not enable or
+disable generation. Chrome's Prompt API exposes no corresponding option, so the same
+control is visibly unavailable for Gemini Nano and the adapter rejects any accidental
+explicit thinking request instead of silently ignoring it.
+
+**Context:** The pinned wllama 3.5.1 source and declarations were inspected on
+2026-07-19. Its completion API accepts per-request `chat_template_kwargs`, merges them
+over load-time defaults, and forwards them to its bundled llama.cpp. A controlled
+Chromium test verifies that toggling Off sends `{ "enable_thinking": false }` without
+reloading. Current llama.cpp maintainers also document that the engine forwards the
+argument but cannot force models whose templates do not implement it to stop reasoning;
+see [llama.cpp #20196](https://github.com/ggml-org/llama.cpp/issues/20196). The Prompt
+API surface inspected for D-030 has no reasoning or thinking control.
+
+**Consequences:** Users can compare thinking and non-thinking behavior within one
+loaded local-model conversation while retaining honest uncertainty for templates that
+ignore the request. This control does not hide generated reasoning: if a model still
+emits a thinking channel, Chat continues to show it. Runtime-level proof that a
+particular template honored the request remains unavailable (RE-027).
+
+**Reopen if:** Runtime introspection can prove support per loaded template, a runtime
+offers a stronger reasoning-budget control that should be modeled separately, or the
+Prompt API exposes a corresponding session or prompt option.
+
+## D-037: Chat context input uses K-token units and upward normalization  (2026-07-19, status: accepted)
+
+**Decision:** Amend D-028's raw-token/256-step Chat context control. Chat displays and
+accepts context size in K-token units, where 1 K is exactly 1,024 tokens. A positive
+fractional manual value rounds upward to the next whole K on blur or session load, then
+clamps to the model-declared maximum. Model changes and metadata refresh continue to
+default from the bounded trained-context declaration; missing metadata remains a 2 K
+fallback. The runtime contract and effective session value remain integer tokens.
+
+**Context:** Model discovery already expresses minimum context in K-token units and
+normalizes fractional entry upward. The owner requested the Chat context control use
+the same mental model rather than exposing raw values and 256-token steps. Chromium
+coverage enters 7.1 K for an 8 K model, observes normalization to 8 K, and verifies
+wllama receives `n_ctx: 8192`. Additional coverage verifies an unedited 2 K fallback
+updates both the loaded session and field when inspection discovers an 8 K maximum,
+and a 2,500-token maximum remains natively valid while wllama receives exactly 2,500.
+
+**Consequences:** Common 2 K/8 K/32 K/128 K values are directly readable across
+discovery and Chat. Users cannot request arbitrary sub-K context increments through
+this control; unusual model maxima that are not whole K remain visible as fractional K
+after the maximum clamp. Large-context memory caveats remain visible.
+
+**Reopen if:** A runtime requires sub-K context tuning for a measured use case, context
+sizes adopt a different standard unit, or model-declared maxima need a discrete
+supported-size selector rather than numeric entry.
+
+## D-036: Capability filtering prioritizes confirmed AND matches and ancestry reads top-down  (2026-07-19, status: accepted)
+
+**Decision:** Capability checkboxes remain AND requirements: a repository is a confirmed
+match only when bounded revision metadata declares every selected capability. Missing
+supplemental evidence remains `needs verification`, but a declared primary task is a
+confirmed exclusion when it contradicts a selected primary capability—for example,
+`automatic-speech-recognition` cannot satisfy selected `text-generation`; this
+contradiction uses `pipeline_tag` provenance and cannot be masked by an ordinary tag.
+Tag-only evidence remains part of the normal declaration/verification predicate. Confirmed
+families and models sort ahead of verification-only groups before download popularity
+is compared, and the filter UI states the AND rule explicitly.
+
+Amend D-033's selected-result ancestry presentation. The worker follows reported
+parents until it reaches a terminal ancestor, cycle, access failure, Stop request, or
+the existing 32-repository safety boundary; the separate eight-level cutoff is removed.
+The detail panel reverses the child-to-parent API edges for display so base ancestors
+appear above their descendants and the selected repository appears at the bottom.
+Normal lineage rows contain only linked repository names—no relation prose, commit
+snapshot labels, or cache statistics. Only the admitted 32 nodes are rendered;
+unscheduled parent references are omitted. Out-of-row warnings identify inaccessible
+or unavailable parents and boundary truncation so they cannot look like verified
+terminal bases. At four-column desktop widths, all hierarchy panels share one bounded
+height and scroll independently.
+
+**Context:** A text-generation + tool-calling search placed a popular Parakeet
+speech-recognition repository first. The AND predicate itself was correct, but missing
+capability evidence put the repository in `needs verification`, and popularity sorting
+mixed that state ahead of confirmed matches. Hugging Face's current
+[Parakeet search results](https://huggingface.co/models?search=parakeet) label the
+relevant repositories Automatic Speech Recognition, while the official
+[Hub search guide](https://huggingface.co/docs/huggingface_hub/en/guides/search)
+documents pipeline-tag filtering as task metadata. A deterministic browser fixture now
+puts a million-download ASR repository (including a misleading text-generation tag)
+beside a one-download text/tool repository and requires only the latter to appear as a
+match. Other fixtures distinguish tag-only ambiguity, cap the rendered graph at 32
+links, expose inaccessible ancestry, measure equal panel heights, and verify
+base-to-selected link order.
+
+**Consequences:** Explicitly contradictory primary tasks no longer masquerade as
+candidate matches, while incomplete metadata is still not called incompatible.
+Popularity cannot outrank evidence quality. The lineage graph remains bounded and its
+raw validated nodes retain status/commit provenance internally, but the comparison UI
+shows the simpler relationship users asked for. A chain can now require up to 31
+parent-detail requests instead of stopping after eight.
+
+**Reopen if:** Hub metadata gains a richer capability schema that can prove
+cross-domain models without task/tag inference; users need verification-only results
+in a separate navigable view; or full-to-bound traversal creates unacceptable request
+volume despite cache reuse and two-wide concurrency.
+
+## D-035: Broad discovery raises its bounded pass to 1,024 candidates  (2026-07-19, status: accepted)
+
+**Decision:** Supersede D-031/D-032's 32-page/256-candidate discovery ceiling with a
+128-page/1,024-candidate ceiling. Hub list pages remain eight candidates, repository
+detail enrichment remains two-wide, and the existing validated cursors, deduplication,
+Stop control, anonymous cache reuse, credential isolation, and abortable 429 backoff
+remain unchanged. Worker protocol validation raises the combined visible/unknown and
+inspected-result bounds in lockstep; per-repository artifact/file bounds do not change.
+Retained visible/unknown records also share a 32-MiB serialized-byte budget enforced
+both while the worker builds the result and when the page validates the protocol. A
+byte-limited result stops the pass, remains explicitly truncated, and asks for narrower
+filters rather than sending an unbounded structured clone.
+
+**Context:** The owner regularly reached the old self-imposed ceiling, while the
+three-tier hierarchy can navigate substantially larger result sets. The old value was
+a conservative WebAI rate/memory guard, not a Hugging Face response limit.
+Deterministic Chromium coverage completes 128 eight-candidate pages, retains and
+renders 1,024 bounded unknown records, and verifies the boundary notice. Browser-mode
+unit coverage separately fills the 32-MiB record budget with worst-shaped matching
+choices and verifies that construction stops before crossing it.
+
+**Consequences:** A full eight-item page sequence can inspect four times as many
+candidates before asking for narrower filters. An uncached broad search can take much
+longer and may encounter Hub throttling, but it still makes only two detail requests at
+once and reacts to 429 rather than creating a larger burst. The result payload and UI
+may contain up to 1,024 repository records.
+
+**Reopen if:** Users still routinely reach this ceiling; measured memory/rendering or
+Hub-rate behavior is poor at 1,024; or the Hub provides a bulk detail/export API that
+removes the per-repository enrichment cost.
+
+## D-034: Repository rows prioritize per-variant popularity  (2026-07-19, status: accepted)
+
+**Decision:** The repository-variant column shows each repository's reported 30-day
+Hugging Face download count, including an explicit Not reported state, instead of
+repeating the needs-verification/search-match label. Verification remains visible in
+the selected detail header where the user can inspect the metadata and download
+choices. Family and model rows retain D-032's aggregate, missing-aware totals.
+
+**Context:** The owner requested the individual popularity signal while comparing
+publisher variants. The variant tier is the only navigation level where the exact
+repository count can be compared without opening each detail panel.
+
+**Consequences:** Variant popularity is scannable alongside artifact count and local
+downloaded state. The value remains Hugging Face's request-based 30-day statistic, not
+unique users or a quality/compatibility score.
+
+**Reopen if:** Hugging Face changes the statistic's meaning or supplies a more useful
+per-variant popularity measure.
+
+## D-033: Selected results expose exact local state and bounded reported ancestry  (2026-07-19, status: accepted; ancestry presentation/depth amended by D-036; ordinary browse ceiling raised by D-035)
+
+**Decision:** Amend D-032's immediate-lineage-only detail view. Every visible discovery
+tier reports exact local acquisition state from the authoritative reconciled inventory:
+family and model rows count unique visible `repo@commit` variants, repository rows say
+Downloaded only for that exact immutable identity, and the detail header reports the
+number of managed entries. Local imports, missing manifests, partial jobs, and another
+revision never count as downloaded. A matching artifact row additionally requires the
+same complete, order-independent source-file set `(path, size, integrity kind, digest)`;
+labels, quantization names, and filenames alone are not identity. This remains correct
+after GGUF splitting because the installed manifest preserves its original HF source
+files.
+
+Selecting a result reconstructs its publisher/Hub-reported ancestry graph on demand in
+the model worker. The selected root stays at the immutable search commit; each
+unpinned parent reference is resolved as a current snapshot and labeled that way. The
+worker follows at most eight parent levels and 32 unique repositories, with at most 16
+parents per node and two requests in flight. Repository identity deduplicates shared
+ancestors and stops cycles. Merges remain branches; inaccessible, unavailable,
+depth-limited, and node-limited branches remain explicit instead of becoming apparent
+roots. Inline checked-node progress and Stop are visible while the lookup runs, and a
+selection or credential change aborts stale work. The ordinary bounded candidate pass does
+not recursively inspect every result: only the selected static detail panel expands.
+
+Hugging Face's model-info API exposes only immediate `baseModels`; no documented
+recursive lineage endpoint was found. Public/open anonymous lineage responses use a
+separate `lineage_snapshots` table in D-032's disposable SQLite database, keyed by repo
+and refreshed after 24 hours. Keeping this minimal current-repo response separate
+prevents it from replacing a full revision-detail snapshot. Both tables share the
+existing 512-row/64-MiB LRU budget and untrusted-input reparsing boundary.
+Each lineage response is limited to 256 KiB, keeping a maximum traversal below 8 MiB
+of raw response data. The memory fallback applies the same byte budget across its full
+detail and lineage maps rather than allowing either map to exceed the protocol limit.
+Authenticated/private/gated lineage bodies remain uncached; an unknown parent is tried
+anonymously before credential fallback, using the same abortable 429 backoff and
+credential lock as discovery.
+
+**Context:** The owner requested downloaded indicators at every result-tree level and
+the complete base relationship like Hugging Face's model UI. Live API checks on
+2026-07-19 followed
+`unsloth/gemma-4-E2B-it-qat-GGUF` through three immediate-parent responses to the Gemma
+root and measured a two-parent merge. The official
+[model-card documentation](https://huggingface.co/docs/hub/model-cards) defines
+`base_model` as one immediate repository or a list for merges and documents adapter,
+merge, quantized, and fine-tune relations. The official
+[HfApi reference](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_api)
+documents `model_info` for one repository/revision and its `baseModels` expansion; its
+recursive file-list option is not model ancestry.
+
+**Consequences:** Search-result state is honest across revisions and quantizations.
+Ancestry is a bounded reconstruction of mutable publisher metadata, not proof of
+genealogy or of the exact parent commit used to create a child. Selecting a new result
+can issue a small bounded set of Hub requests, but it does not multiply the whole
+search pass, and recent public parent snapshots are locally reusable.
+
+**Reopen if:** Hugging Face publishes a stable recursive lineage endpoint with pinned
+parent revisions; measured selected-result expansion causes unacceptable request
+volume; product requirements include unbounded descendants/children rather than
+ancestry; or users need partial-job state rolled into the hierarchy.
+
+## D-032: Discovery keeps a bounded local SQLite metadata catalog and declared lineage  (2026-07-19, status: accepted; selected-result lineage amended by D-033; browse ceiling raised by D-035)
+
+**Decision:** Supersede D-031's eight-entry-only anonymous enrichment cache with a
+disposable, worker-owned SQLite catalog in OPFS. Hugging Face search remains the
+bounded first pass; each candidate is then resolved at the search result's immutable
+commit with the documented model-info expansions plus `blobs=true`. WebAI stores the
+entire validated, at-most-8-MiB JSON snapshot only when an anonymous response explicitly
+declares both public visibility and open gating, keyed by repo and commit, and reparses
+it through the current untrusted-input boundary on every cache read. Reads reject a
+stored byte count above that per-snapshot bound or any count that disagrees with the
+UTF-8 payload before JSON parsing. The catalog keeps at most 512 current repo snapshots
+and 64 MiB of raw JSON,
+evicted by least-recent access. It is derived state: SQLite initialization, locking,
+quota, corruption, or schema failures degrade to the existing eight-entry memory LRU
+and never block network discovery, acquisition, credentials, or the authoritative
+IndexedDB manifests. Authenticated/private/gated response bodies, credentials,
+Authorization headers, and signed URLs are never persisted or copied into this
+catalog. Merely having a saved credential does not disable this anonymous cache:
+candidates reported as open (or with unknown gating) are resolved anonymously first,
+so refining local filters can reuse their pinned snapshots. If that anonymous request
+is denied or not found, WebAI retries it with the saved credential for a potentially
+private repository; explicitly gated candidates use the credential directly. Those
+authenticated fallback/gated responses remain uncached. The bounded `private` flag is
+carried through result metadata and installed provenance; private visibility overrides
+an otherwise-open gate label and always requires a saved credential in the UI.
+Revision-pinned detail visibility and gate mode win over the older search-page snapshot
+when they disagree. Because access policy can change without a commit, a current list
+signal of private/gated bypasses anonymous cache reads and obtains fresh detail/access
+state instead of allowing an older public snapshot to downgrade it.
+
+The official `@sqlite.org/sqlite-wasm` 3.53.0-build1 direct OO1 API runs lazily in the
+existing model worker with its regular multi-connection OPFS VFS, default rollback
+journal, short parameterized operations, and an opportunistic origin-wide Web Lock.
+The catalog serializes its own two-wide enrichment operations before requesting that
+lock so sibling candidates do not mistake same-worker activity for cross-context
+contention. Lock contention from another context immediately degrades that worker to
+memory/network rather than waiting
+behind a stalled browser context. The database is
+namespaced at `/webai/v1/hugging-face-catalog.sqlite3`; unsupported browsers use the
+memory fallback. The dependency is Apache-2.0 and its published tarball omits the
+license file, so WebAI carries a reviewed Apache-2.0 notice fallback. The production
+build must retain the same-origin wasm and OPFS proxy assets.
+
+Second-stage filters use the reparsed pinned details. Quantization is an exact nominal
+filename bit class (1/2/3/4/5/6/8/16/32 or Other), with OR semantics inside that
+category. Selected capabilities are AND requirements over bounded task/tag evidence;
+minimum context uses the Hub's revision-pinned GGUF summary. Missing capability or
+context metadata is `needs verification`, not incompatible; a context value below the
+minimum or a confirmed nonmatching artifact is excluded. The discovery UI accepts the
+minimum as integer K-token units and multiplies by 1,024 at the worker-protocol boundary,
+rounding a positive manually entered fraction upward to the next whole K. Common
+1K/8K/32K/128K thresholds therefore do not require raw token counts or exact integer
+entry. Discovery starts with real, visible defaults of at least 32 K declared context
+and at most 4 GiB per download choice; clearing either field restores that default on
+blur or submission rather than silently removing the filter. The current runtime/format
+target remains wllama/GGUF. Future runtime formats become selectable only with their
+acquisition adapters rather than implying that a Hub tag is runnable compatibility.
+
+The scalable result browser has four columns: a broad declared family/architecture
+facet, declared base model, repository variant, and a sticky selected-instance
+detail/download panel with a revision-pinned model-card link, a clearly labeled current
+model-page link, and an immutable-file link. The first facet formats the bounded
+architecture value (for example `gemma4` becomes `Gemma 4`) for navigation; it is not
+proof of genealogy, and an absent architecture stays in an explicit undeclared bucket.
+Model grouping uses only normalized immediate `baseModels`,
+bounded model-card `base_model`, or exact `base_model:` tags, in that precedence order.
+One parent groups under that repo; multiple parents form a neutral multi-base group;
+absent/conflicting parent metadata keeps the repository as its own model. WebAI never
+strips names such as `-GGUF` to invent ancestry and does not recursively fetch parents
+during ordinary browsing. Search/filter controls start open, summarize the active query
+and filter count, collapse after a valid search begins, and remain reopenable for
+refinement. Editing a filter keeps the previous hierarchy visible with a stale-results
+notice until the user deliberately runs the revised search. Pagination is not a
+separate user action: a valid search automatically follows safe Hub cursors until
+results end or the explicit 32-page/256-candidate boundary is reached. Boundary-limited
+results ask for narrower filters instead of exposing a load-more control. Family and
+model tiers sort by the exact sum of reported 30-day Hub download counts across their
+visible repository variants, with stable name fallbacks for ties and explicit missing
+counts. A repository is counted once per search even if a moving cursor reports it at
+another commit. This is a popularity signal, not unique users: Hugging Face counts
+requests to designated files, and every GGUF-file GET/HEAD counts, so whole-repository
+clones can double-count.
+
+**Context:** The owner requested persistent all-field model-detail caching, compound
+local filtering, and Gemma family/architecture browsing. Direct API measurements on 2026-07-19
+showed that pinned `blobs=true` model info accepts repeated expansions for `baseModels`,
+`cardData`, `config`, `gguf`, siblings, and other documented fields; comma-separated
+expansions returned HTTP 400. `unsloth/gemma-4-E2B-it-qat-GGUF` declared a quantized
+parent and a 131,072-token GGUF context summary. Official Gemma metadata also showed
+why evidence must remain tri-state: top-level and Transformers task fields differed,
+while reasoning/tool/audio capabilities described by the official card were absent
+from common filter tags. Hugging Face documents model-card tags as publisher-supplied
+and `base_model` relations as publisher-specified or Hub-inferred.
+
+The shipped SQLite closure measured 864,752 bytes of wasm and a 32,289-byte OPFS proxy;
+the lazily bundled worker grew rather than adding these bytes to the initial page.
+Production Chromium verification created a persistent catalog row, reloaded the page
+and worker, and reused that row without a second revision-info request. The official
+SQLite wasm persistence guide was checked for worker-only OPFS and multi-tab VFS
+constraints.
+
+**Consequences:** Repeated searches spend HF quota on current search pages but can
+avoid unchanged revision-detail calls, and the result UI reports catalog persistence,
+size, row count, and per-pass hits. Raw snapshots preserve newly useful HF fields for
+future local indexes without silently discarding provenance. SQLite is a meaningful
+bundle/runtime cost accepted for a queryable local catalog; it is not a second source
+of truth and does not authorize downloads. Architecture/base-model groups are honest
+navigation facets but do not collapse every multi-hop descendant to a family root.
+
+**Reopen if:** Measured bundle/startup cost outweighs repeat-search savings; regular
+OPFS multi-tab behavior proves unreliable; cache pressure harms model storage; HF
+offers a compact durable catalog/export; or product requirements demand recursive
+lineage traversal, in which case add strict depth/node/cycle bounds and explicit user
+network progress rather than silently expanding ordinary browse traffic.
+
+## D-031: Discovery progressively enriches pinned candidates and isolates HF credentials  (2026-07-19, status: accepted; credential and restricted-access portions superseded by D-042; cache/filter taxonomy amended by D-032; browse ceiling superseded by D-035)
+
+**Decision:** M5 extends the existing model worker and Models workbench instead of
+creating a separate discovery data plane. A user-submitted search asks the Hub for
+eight GGUF candidates per page with repeated minimal `expand` parameters. Text,
+format, and optional task are server filters; quantization and maximum artifact bytes
+are applied only after the worker resolves each candidate's reported 40-hex commit
+through the same bounded model-info parser and shard grouper used by manual M2
+acquisition. One browse operation automatically fetches at most 32 pages / 256
+candidates through validated opaque continuation cursors, enriches two candidates
+concurrently, and caches
+at most eight bounded successful anonymous enrichments in an LRU by `(repo, commit)`.
+Authenticated and in-flight requests are never cached, so cancellation or credential
+changes cannot poison another browse. These are rate/memory-control bounds, not claims
+about an exhaustive Hub result set. Candidate repositories are deduplicated across
+cursor pages so a moving listing cannot double-count popularity; the retained
+candidate's commit remains the enrichment/cache identity, and a commit-pinned response
+must return that exact commit before it can be
+shown or cached.
+
+Every list page and uncached pinned-detail GET uses the same finite 429 policy: at most
+three retries, a readable delta-seconds or HTTP-date `Retry-After` honored up to 30
+seconds, otherwise exponential full jitter with ceilings of 500 ms, 1 second, and 2
+seconds. Two-wide enrichment, repository
+deduplication, and the revision catalog limit request pressure; retry waits expose Stop
+and never become an unbounded bot-like polling loop.
+
+Cursor URLs must remain HTTPS on `huggingface.co`, have no credentials or fragment,
+and use exactly `/api/models`; their query remains opaque. A pinned candidate that is
+successfully inspected and has no matching artifact is counted as excluded. A missing
+commit, authorization failure, malformed pinned model-info response, or failed
+enrichment remains a visible `unknown` result with a next action and is never presented
+as incompatible. A malformed search-page envelope fails the operation rather than
+trusting a partial page; individual well-formed repositories remain isolated during
+enrichment.
+The manual repo/URL entry and local import paths remain alongside Browse as escape
+hatches, and a discovered choice enters the unchanged M2 resumable/integrity-checked
+download path.
+
+The browser database upgrades to version 2 with a dedicated `credentials` store.
+WebAI accepts bounded `hf_` user tokens only after `GET /api/whoami-v2` succeeds,
+returns only saved/not-saved state to the page, never repopulates the secret, and
+re-reads it inside the worker for intended HF API and commit-pinned resolver requests.
+It is absent from inventory and model records. License identifier, a bounded custom
+`cardData.license_name` for the otherwise-generic `license:other` case, gate mode, and
+task are bounded publisher metadata shown before download; the installed source
+retains those non-secret provenance fields. Gate values normalize the current
+`false | "auto" | "manual" | missing` surface without truthy coercion. License tags
+are informational, not a legal compatibility verdict. Exact artifact size is compared
+with the browser's estimated remaining origin quota, while runtime-memory fit stays
+explicitly unknown because download bytes are not runtime memory.
+
+After a proposed credential passes whoami validation, saving/replacing it—or removing
+the current credential—broadcasts a same-origin control event,
+takes an origin-wide exclusive Web Lock against shared credential-bearing request
+attempts, and aborts active browse, manual resolve, and validation operations while
+pausing active remote downloads before and after the IndexedDB mutation. This applies
+across tabs and prevents an in-flight page enrichment or 429 retry from reusing a
+credential after the UI says it changed; each attempt also rechecks the IndexedDB token
+inside the shared lock. Other tabs update their saved-token UI and invalidate results
+bound to the old authorization state. Durable download prefixes remain resumable with
+the new credential. Paused private/gated jobs keep Resume disabled with an explanation
+until a credential is present, including after reload. Malformed stored credential records are deleted, and a blocked or
+version-changed database connection is reopened rather than cached permanently.
+Whoami retries bounded HTTP 429 responses; only 401/403 rejects the proposed credential,
+while other HTTP failures remain retryable network errors.
+
+**Context:** Checked 2026-07-19 against the current official
+[`list_models` API reference](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_api#huggingface_hub.HfApi.list_models),
+[model-card metadata](https://huggingface.co/docs/hub/en/model-cards),
+[gated-model guidance](https://huggingface.co/docs/hub/en/models-gated), and
+[user-token guidance](https://huggingface.co/docs/hub/en/security-tokens), plus direct
+API and isolated production-browser measurements. The live list API required repeated
+`expand` parameters (a comma list returned HTTP 400), exposed `Link` but not rate-limit
+headers to browser Fetch, and returned the gate modes above. Revision-pinned model
+info continued to return exact GGUF sizes and LFS SHA-256 identities. A production
+Chromium probe with dummy Authorization plus Range followed a public signed resolver
+redirect to an exact 16-byte HTTP 206; Authorization was present only at
+`huggingface.co` and Fetch stripped it from the cross-origin CDN request. No valid HF
+credential is available in the development environment, so the distinct required
+valid-token gated-model check remains an M5 live gate rather than being inferred from
+that public redirect measurement.
+
+The minimum documented WebAI credential is a fine-grained token whose repository
+permissions include read access to public gated repositories the user can already
+access; private models additionally need repository-specific read access. WebAI needs
+no write, inference, webhook, or billing permission. Gated access remains a separate
+per-user Hub action: the same account must first accept the model terms or receive
+approval, because creating a token does not grant that access.
+Public search and public downloads require no credential. Once saved, the credential
+authenticates Hub search and detail requests so repositories requiring that account can
+be inspected, and it authorizes gated/private file downloads; all such requests remain
+limited to Hugging Face as described above.
+Because the primary discovery path is public, credential setup is a collapsed,
+deemphasized optional disclosure by default. Its summary explains that it is only for
+gated/private models and reports a saved credential without making token setup a
+prerequisite for search.
+
+**Consequences:** Browse, manual resolve, resume, and download share one credential
+and integrity boundary. Search results explicitly report inspected pages/candidates,
+known exclusions, unknowns, and whether the automatic pass reached its safety boundary.
+Saving a token is an
+intentional user action and validates identity, but it neither accepts publisher terms
+nor proves entitlement to every gated repo; unknown gated cards link to the Hub's
+access flow. The credential-store migration preserves the existing model/job/blob
+stores, and older model records remain readable because new provenance fields are
+optional.
+
+**Reopen if:** The Hub documents a typed per-artifact quant/size search filter with
+equivalent immutable identity; cursor or CORS behavior changes; measured API limits
+make the 32-page/256-candidate enrichment boundary impractical; `whoami-v2` ceases to
+be the supported token validation surface; or the browser exposes attributable memory
+evidence suitable for
+pre-download hints.
+
 ## D-030: Prompt API keeps browser-managed acquisition and state visible in the shared runtime contract  (2026-07-19, status: accepted)
 
 **Decision:** M4 amends the architecture's provisional assumption that every logical
@@ -139,7 +736,7 @@ wrong location.
 releases the result-drain behavior, a runtime's structured channel/tool events make
 token diagnostics redundant, or measured logprob overhead is unacceptable.
 
-## D-028: M3 splits verified monoliths before wllama load  (2026-07-18, status: accepted)
+## D-028: M3 splits verified monoliths before wllama load  (2026-07-18, status: accepted; context-input units amended by D-037)
 
 **Decision:** M3 uses D-009's fallback: download or import and SHA-256-verify a
 monolithic GGUF first, then derive upstream-compatible shards in the model worker.
@@ -193,11 +790,12 @@ retention is capped at 256 bytes. This preserves all output without coupling par
 React update count to model token count (RE-020).
 
 GGUF inspection promotes a bounded architecture `context_length` as the model-declared
-trained maximum. Chat defaults the selected model to that value before load, exposes
-256-token number-input steps plus exact manual entry, preserves a valid user override
-when load-time inspection adds metadata, and labels the value as a model declaration
-rather than a browser-memory guarantee. If metadata omits it, Chat uses a 2,048-token
-fallback; wllama also exposes `n_ctx_train` only after model load.
+trained maximum. Chat defaults the selected model to that value before load and
+preserves a valid user override when load-time inspection adds metadata. D-037 replaces
+the original 256-token/raw-token input with K-token units and upward whole-K
+normalization while retaining that override contract. The value remains a model
+declaration rather than a browser-memory guarantee. If metadata omits it, Chat uses a
+2 K-token fallback; wllama also exposes `n_ctx_train` only after model load.
 
 **Context:** The milestone-start experiment built and inspected upstream
 `gguf-split`. It opens a completed seekable input, constructs output metadata, then
@@ -1260,7 +1858,7 @@ telemetry concerns while adding a capability LiteRT-LM lacks; direct ORT is need
 isolate a Transformers.js defect; or a screened runtime matures and demonstrates a
 distinct measured capability.
 
-## D-010: M0 feature triage — scope verdicts  (2026-07-17, accepted; question 8 superseded by D-024)
+## D-010: M0 feature triage — scope verdicts  (2026-07-17, accepted; gated-model token verdict superseded by D-042; question 8 superseded by D-024)
 
 **Decision:** Full walk of every `proposed` features.md row and open question with
 the project owner (structured prompt session, 2026-07-17). Verdicts:

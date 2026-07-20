@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { modelWorkerProtocolVersion, parseModelWorkerEvent } from "./protocol";
+import { maximumBrowseCandidates, maximumBrowsePages } from "./types";
+import { shouldBroadcastWorkerEvent } from "./worker-client";
 
 const envelope = { protocolVersion: modelWorkerProtocolVersion, requestId: "request-1" };
 
@@ -25,6 +27,393 @@ describe("model worker event validation", () => {
         currentFile: "fixture.gguf",
       }),
     ).toBeDefined();
+    const lateProgress = {
+      protocolVersion: modelWorkerProtocolVersion,
+      type: "model/browse-progress",
+      requestId: "browse-old",
+      inspectedCandidates: 8,
+      inspectedPages: 1,
+    } as const;
+    expect(shouldBroadcastWorkerEvent(lateProgress, undefined)).toBe(false);
+    expect(shouldBroadcastWorkerEvent(lateProgress, "browse-new")).toBe(false);
+    expect(shouldBroadcastWorkerEvent(lateProgress, "browse-old")).toBe(true);
+    const lateLineage = {
+      protocolVersion: modelWorkerProtocolVersion,
+      type: "model/lineage-progress",
+      requestId: "lineage-old",
+      inspectedNodes: 2,
+    } as const;
+    expect(shouldBroadcastWorkerEvent(lateLineage, undefined)).toBe(false);
+    expect(shouldBroadcastWorkerEvent(lateLineage, undefined, "lineage-new")).toBe(false);
+    expect(shouldBroadcastWorkerEvent(lateLineage, undefined, "lineage-old")).toBe(true);
+    const lateBrowseRetry = {
+      protocolVersion: modelWorkerProtocolVersion,
+      type: "model/retry",
+      requestId: "browse-old",
+      phase: "browse",
+      attempt: 1,
+      delayMs: 500,
+      message: "Retrying browse.",
+    } as const;
+    expect(shouldBroadcastWorkerEvent(lateBrowseRetry, undefined)).toBe(false);
+    expect(shouldBroadcastWorkerEvent(lateBrowseRetry, "browse-new")).toBe(false);
+    expect(shouldBroadcastWorkerEvent(lateBrowseRetry, "browse-old")).toBe(true);
+    const lateLineageRetry = {
+      ...lateBrowseRetry,
+      requestId: "lineage-old",
+      phase: "lineage",
+    } as const;
+    expect(shouldBroadcastWorkerEvent(lateLineageRetry, undefined, "lineage-new")).toBe(false);
+    expect(shouldBroadcastWorkerEvent(lateLineageRetry, undefined, "lineage-old")).toBe(true);
+    expect(
+      parseModelWorkerEvent({
+        protocolVersion: modelWorkerProtocolVersion,
+        type: "model/browse-progress",
+        requestId: "browse-maximum",
+        inspectedCandidates: maximumBrowseCandidates,
+        inspectedPages: maximumBrowsePages,
+      }),
+    ).toBeDefined();
+    expect(
+      parseModelWorkerEvent({
+        protocolVersion: modelWorkerProtocolVersion,
+        type: "model/browse-progress",
+        requestId: "browse-too-many-pages",
+        inspectedCandidates: maximumBrowseCandidates,
+        inspectedPages: maximumBrowsePages + 1,
+      }),
+    ).toBeUndefined();
+    expect(
+      parseModelWorkerEvent({
+        protocolVersion: modelWorkerProtocolVersion,
+        type: "model/browse-progress",
+        requestId: "browse-too-many-candidates",
+        inspectedCandidates: maximumBrowseCandidates + 1,
+        inspectedPages: maximumBrowsePages,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("accepts exactly the raised 1,024-candidate result boundary", () => {
+    const unknown = Array.from({ length: maximumBrowseCandidates }, (_, index) => ({
+      repo: `owner/model-${index}`,
+      commit: (index + 1).toString(16).padStart(40, "0"),
+      metadata: { gating: "open" },
+      reason: "No matching artifact.",
+    }));
+    expect(
+      parseModelWorkerEvent({
+        ...envelope,
+        type: "model/browse-result",
+        result: {
+          matches: [],
+          needsVerification: [],
+          unknown,
+          inspectedCandidates: maximumBrowseCandidates,
+          excludedCandidates: 0,
+          inspectedPages: maximumBrowsePages,
+          cacheHits: 0,
+          catalog: { persistent: true, entries: 0, bytes: 0 },
+          truncated: true,
+        },
+      }),
+    ).toBeDefined();
+  });
+
+  it("accepts only a truncated stopped-discovery snapshot", () => {
+    const stopped = {
+      matches: [],
+      needsVerification: [],
+      unknown: [],
+      inspectedCandidates: 0,
+      excludedCandidates: 0,
+      inspectedPages: 0,
+      cacheHits: 0,
+      catalog: { persistent: true, entries: 0, bytes: 0 },
+      truncated: true,
+      truncationReason: "stopped",
+    };
+    expect(
+      parseModelWorkerEvent({
+        ...envelope,
+        type: "model/browse-result",
+        result: stopped,
+      }),
+    ).toBeDefined();
+    expect(
+      parseModelWorkerEvent({
+        ...envelope,
+        type: "model/browse-result",
+        result: { ...stopped, truncated: false },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("rejects a browse result above the aggregate record-byte budget", () => {
+    const tags = Array.from(
+      { length: 256 },
+      (_, index) => `${index.toString().padStart(3, "0")}-${"x".repeat(156)}`,
+    );
+    const unknown = Array.from({ length: 800 }, (_, index) => ({
+      repo: `owner/large-${index}`,
+      commit: (index + 1).toString(16).padStart(40, "0"),
+      metadata: { gating: "open", tags },
+      reason: "x".repeat(1_024),
+    }));
+    expect(
+      parseModelWorkerEvent({
+        ...envelope,
+        type: "model/browse-result",
+        result: {
+          matches: [],
+          needsVerification: [],
+          unknown,
+          inspectedCandidates: unknown.length,
+          excludedCandidates: 0,
+          inspectedPages: 100,
+          cacheHits: 0,
+          catalog: { persistent: true, entries: 0, bytes: 0 },
+          truncated: true,
+          truncationReason: "result-budget",
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("accepts a bounded lineage graph and rejects duplicate or oversized nodes", () => {
+    const lineage = {
+      rootRepo: "owner/model",
+      nodes: [
+        {
+          repo: "owner/model",
+          commit: "a".repeat(40),
+          parents: [{ repo: "base/model", relation: "finetune" }],
+          status: "resolved",
+        },
+        {
+          repo: "base/model",
+          commit: "b".repeat(40),
+          parents: [],
+          status: "resolved",
+        },
+      ],
+      cacheHits: 1,
+      truncated: false,
+    };
+    expect(
+      parseModelWorkerEvent({ ...envelope, type: "model/lineage-result", lineage }),
+    ).toBeDefined();
+    expect(
+      parseModelWorkerEvent({
+        ...envelope,
+        type: "model/lineage-result",
+        lineage: { ...lineage, nodes: [lineage.nodes[0], lineage.nodes[0]] },
+      }),
+    ).toBeUndefined();
+    expect(
+      parseModelWorkerEvent({
+        ...envelope,
+        type: "model/lineage-result",
+        lineage: {
+          ...lineage,
+          nodes: Array.from({ length: 33 }, (_, index) => ({
+            repo: `owner/model-${index}`,
+            parents: [],
+            status: "resolved",
+          })),
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("requires browse choices to equal their validated canonical repository choices", () => {
+    const choice = {
+      id: "fixture-Q4_K_M.gguf",
+      label: "fixture-Q4_K_M.gguf",
+      quantization: "Q4_K_M",
+      totalSize: 10,
+      files: [
+        {
+          path: "fixture-Q4_K_M.gguf",
+          size: 10,
+          integrity: { kind: "lfs-sha256", digest: "a".repeat(64) },
+        },
+      ],
+    };
+    const event = {
+      ...envelope,
+      type: "model/browse-result",
+      result: {
+        matches: [
+          {
+            repo: "owner/model",
+            commit: "b".repeat(40),
+            omittedMatchingChoices: 0,
+            repository: {
+              repo: "owner/model",
+              requestedRevision: "b".repeat(40),
+              commit: "b".repeat(40),
+              metadata: { gating: "open", visibility: "private" },
+              choices: [choice],
+            },
+            matchingChoices: [choice],
+          },
+        ],
+        needsVerification: [],
+        unknown: [],
+        inspectedCandidates: 1,
+        excludedCandidates: 0,
+        inspectedPages: 1,
+        cacheHits: 0,
+        catalog: { persistent: true, entries: 1, bytes: 100 },
+        truncated: false,
+      },
+    };
+    const baseMatch = event.result.matches[0]!;
+    expect(parseModelWorkerEvent(event)).toBeDefined();
+    expect(
+      parseModelWorkerEvent({
+        ...event,
+        result: {
+          ...event.result,
+          matches: [
+            {
+              ...baseMatch,
+              repository: {
+                ...baseMatch.repository,
+                metadata: { gating: "open", visibility: "secret" },
+              },
+            },
+          ],
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      parseModelWorkerEvent({
+        protocolVersion: modelWorkerProtocolVersion,
+        type: "model/browse-progress",
+        requestId: "browse-1",
+        inspectedCandidates: 8,
+        inspectedPages: 1,
+      }),
+    ).toBeDefined();
+    expect(
+      parseModelWorkerEvent({
+        ...event,
+        result: {
+          ...event.result,
+          matches: [{ ...event.result.matches[0], repo: "owner/different-model" }],
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      parseModelWorkerEvent({
+        ...event,
+        result: {
+          ...event.result,
+          matches: [{ ...event.result.matches[0], commit: "c".repeat(40) }],
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      parseModelWorkerEvent({
+        ...event,
+        result: {
+          ...event.result,
+          matches: [
+            {
+              ...event.result.matches[0],
+              matchingChoices: [{ ...choice, label: "x".repeat(3_000) }],
+            },
+          ],
+        },
+      }),
+    ).toBeUndefined();
+    const differentChoice = {
+      ...choice,
+      id: "fixture-Q8_0.gguf",
+      label: "fixture-Q8_0.gguf",
+      quantization: "Q8_0",
+      files: [{ ...choice.files[0], path: "fixture-Q8_0.gguf" }],
+    };
+    expect(
+      parseModelWorkerEvent({
+        ...event,
+        result: {
+          ...event.result,
+          matches: [{ ...event.result.matches[0], matchingChoices: [differentChoice] }],
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      parseModelWorkerEvent({
+        ...event,
+        result: {
+          ...event.result,
+          matches: [
+            {
+              ...baseMatch,
+              repository: { ...baseMatch.repository, choices: [] },
+              matchingChoices: [],
+            },
+          ],
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      parseModelWorkerEvent({
+        ...event,
+        result: {
+          ...event.result,
+          matches: Array.from({ length: maximumBrowseCandidates + 1 }, (_, index) => {
+            const commit = (index + 1).toString(16).padStart(40, "0");
+            return {
+              ...baseMatch,
+              repo: `owner/model-${index}`,
+              commit,
+              repository: {
+                ...baseMatch.repository,
+                repo: `owner/model-${index}`,
+                requestedRevision: commit,
+                commit,
+              },
+            };
+          }),
+          inspectedCandidates: maximumBrowseCandidates + 1,
+        },
+      }),
+    ).toBeUndefined();
+    const files = Array.from({ length: 256 }, (_, index) => ({
+      ...choice.files[0],
+      path: `part-${index}.gguf`,
+    }));
+    const oversizedChoice = {
+      ...choice,
+      totalSize: 2_560,
+      files,
+      optionalMtp: {
+        ...choice.files[0],
+        path: "mtp-model.gguf",
+      },
+    };
+    expect(
+      parseModelWorkerEvent({
+        ...event,
+        result: {
+          ...event.result,
+          matches: [
+            {
+              ...baseMatch,
+              repository: {
+                ...baseMatch.repository,
+                choices: [oversizedChoice],
+              },
+              matchingChoices: [oversizedChoice],
+            },
+          ],
+        },
+      }),
+    ).toBeUndefined();
   });
 
   it("requires a recognized stage for split progress only", () => {

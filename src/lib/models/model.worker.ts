@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import { openHuggingFaceCatalog } from "./catalog";
 import { inspectGgufBlob } from "./gguf";
 import { splitGgufFile, WllamaShardLimitError } from "./gguf-split";
 import {
@@ -9,6 +10,8 @@ import {
 } from "./gguf-split-profile";
 import { createIntegrityHasher, createSha256 } from "./hashing";
 import {
+  browseHuggingFaceModels,
+  fetchHuggingFaceLineage,
   fetchWith429Backoff,
   resolveHuggingFaceModel,
   resolverUrl,
@@ -40,6 +43,7 @@ import type {
   DownloadJobRecord,
   GgufInspection,
   HuggingFaceArtifactChoice,
+  HuggingFaceBaseModel,
   InstalledModelRecord,
   LocalImportJobFile,
   LocalImportJobRecord,
@@ -52,11 +56,27 @@ import { ModelOperationError, modelSchemaVersion } from "./types";
 const scope = self as DedicatedWorkerGlobalScope;
 const checkpointBytes = 1024 * 1024;
 const operations = new Map<string, AbortController>();
+const browseOperations = new Map<string, AbortController>();
+const lineageOperations = new Map<string, AbortController>();
 const controlChannel =
   typeof BroadcastChannel === "undefined"
     ? undefined
     : new BroadcastChannel("webai-model-control-v1");
 let fallbackId = 0;
+
+const lineageRelations = new Set(["adapter", "finetune", "merge", "quantized", "unknown"]);
+
+function isLineageParent(value: unknown): value is HuggingFaceBaseModel {
+  if (typeof value !== "object" || value === null) return false;
+  const parent = value as { readonly repo?: unknown; readonly relation?: unknown };
+  return (
+    typeof parent.repo === "string" &&
+    parent.repo.length <= 200 &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/u.test(parent.repo) &&
+    (parent.relation === undefined ||
+      (typeof parent.relation === "string" && lineageRelations.has(parent.relation)))
+  );
+}
 
 controlChannel?.addEventListener("message", (event: MessageEvent<unknown>) => {
   const value = event.data;
@@ -84,6 +104,15 @@ function makeId(prefix: string): string {
 
 function isDownloadJob(job: Awaited<ReturnType<typeof getJob>>): job is DownloadJobRecord {
   return job?.source.kind === "hugging-face";
+}
+
+function restrictedSource(source: DownloadJobRecord["source"]): boolean {
+  return (
+    source.visibility === "private" ||
+    source.gating === "automatic" ||
+    source.gating === "manual" ||
+    source.gating === "gated"
+  );
 }
 
 type WorkerEventWithoutVersion = ModelWorkerEvent extends infer Event
@@ -288,13 +317,23 @@ async function downloadFile(
             }),
         },
       );
-    } catch {
-      if (signal.aborted) throw new DOMException("paused", "AbortError");
+    } catch (error) {
+      if (signal.aborted || (error instanceof DOMException && error.name === "AbortError"))
+        throw new DOMException("paused", "AbortError");
       throw new ModelOperationError({
         code: "network",
         phase: "download",
         message: `The transfer of ${jobFile.source.path} was interrupted. Its durable prefix was kept.`,
         retryable: true,
+      });
+    }
+    if (response.status === 401 || response.status === 403) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new ModelOperationError({
+        code: "input-invalid",
+        phase: "download",
+        message: "This download is not public. WebAI supports only public, ungated models.",
+        retryable: false,
       });
     }
     const range = validateRangeResponse(response, durable, jobFile.source.size);
@@ -541,6 +580,16 @@ function createJob(
       requestedRevision: repository.requestedRevision,
       commit: repository.commit,
       files: choice.files,
+      ...(repository.metadata.license === undefined
+        ? {}
+        : { license: repository.metadata.license }),
+      gating: repository.metadata.gating,
+      ...(repository.metadata.visibility === undefined
+        ? {}
+        : { visibility: repository.metadata.visibility }),
+      ...(repository.metadata.pipelineTask === undefined
+        ? {}
+        : { pipelineTask: repository.metadata.pipelineTask }),
     },
     files: choice.files.map((source, index) => ({
       source,
@@ -1053,9 +1102,114 @@ scope.addEventListener("message", (message: MessageEvent<unknown>) => {
           post({ type: "model/resolved", requestId, repository });
           break;
         }
+        case "model/browse": {
+          if (
+            request.filters === undefined ||
+            typeof request.filters !== "object" ||
+            typeof request.filters.query !== "string" ||
+            request.filters.format !== "gguf"
+          )
+            throw new Error("invalid request");
+          const controller = new AbortController();
+          browseOperations.set(requestId, controller);
+          try {
+            const catalog = await openHuggingFaceCatalog();
+            const result = await browseHuggingFaceModels(request.filters, {
+              fetcher: fetch,
+              signal: controller.signal,
+              catalog,
+              onRetry: ({ attempt, delayMs }) =>
+                post({
+                  type: "model/retry",
+                  requestId,
+                  phase: "browse",
+                  attempt,
+                  delayMs,
+                  message:
+                    "Hugging Face rate-limited model discovery. Retrying automatically; stop searching to cancel.",
+                }),
+              onProgress: ({ inspectedCandidates, inspectedPages }) =>
+                post({
+                  type: "model/browse-progress",
+                  requestId,
+                  inspectedCandidates,
+                  inspectedPages,
+                }),
+            });
+            post({ type: "model/browse-result", requestId, result });
+          } finally {
+            if (browseOperations.get(requestId) === controller) browseOperations.delete(requestId);
+          }
+          break;
+        }
+        case "model/browse-cancel": {
+          if (typeof request.targetRequestId !== "string") throw new Error("invalid request");
+          browseOperations.get(request.targetRequestId)?.abort();
+          break;
+        }
+        case "model/lineage": {
+          if (
+            typeof request.repo !== "string" ||
+            typeof request.commit !== "string" ||
+            (request.parents !== undefined &&
+              (!Array.isArray(request.parents) ||
+                request.parents.length > 16 ||
+                !request.parents.every(isLineageParent)))
+          )
+            throw new Error("invalid request");
+          const controller = new AbortController();
+          lineageOperations.set(requestId, controller);
+          try {
+            const catalog = await openHuggingFaceCatalog();
+            const lineage = await fetchHuggingFaceLineage(
+              {
+                repo: request.repo,
+                commit: request.commit,
+                parents: request.parents ?? [],
+              },
+              {
+                fetcher: fetch,
+                signal: controller.signal,
+                catalog,
+                onRetry: ({ attempt, delayMs }) =>
+                  post({
+                    type: "model/retry",
+                    requestId,
+                    phase: "lineage",
+                    attempt,
+                    delayMs,
+                    message:
+                      "Hugging Face rate-limited the lineage request. Retrying automatically.",
+                  }),
+                onProgress: (inspectedNodes) =>
+                  post({ type: "model/lineage-progress", requestId, inspectedNodes }),
+              },
+            );
+            post({ type: "model/lineage-result", requestId, lineage });
+          } finally {
+            if (lineageOperations.get(requestId) === controller)
+              lineageOperations.delete(requestId);
+          }
+          break;
+        }
+        case "model/lineage-cancel": {
+          if (typeof request.targetRequestId !== "string") throw new Error("invalid request");
+          lineageOperations.get(request.targetRequestId)?.abort();
+          break;
+        }
         case "model/download": {
           if (request.repository === undefined || request.choice === undefined)
             throw new Error("invalid request");
+          if (
+            request.repository.metadata.visibility !== "public" ||
+            request.repository.metadata.gating !== "open"
+          )
+            throw new ModelOperationError({
+              code: "unsupported",
+              phase: "download",
+              message: "WebAI supports only public, ungated Hugging Face models.",
+              retryable: false,
+            });
           const job = createJob(request.repository, request.choice);
           await putJob(job);
           post({ type: "model/job", requestId, job });
@@ -1089,7 +1243,17 @@ scope.addEventListener("message", (message: MessageEvent<unknown>) => {
                 retryable: false,
               });
             }
-          else await runJob(requestId, job);
+          else {
+            if (restrictedSource(job.source))
+              throw new ModelOperationError({
+                code: "unsupported",
+                phase: "download",
+                message:
+                  "This partial belongs to a restricted repository and cannot be resumed. Discard it to remove the partial data.",
+                retryable: false,
+              });
+            await runJob(requestId, job);
+          }
           break;
         }
         case "model/pause": {
@@ -1159,7 +1323,7 @@ scope.addEventListener("message", (message: MessageEvent<unknown>) => {
         requestId,
         failure: failureFrom(
           error,
-          request.type === "model/resolve"
+          request.type === "model/resolve" || request.type === "model/lineage"
             ? "resolve"
             : request.type === "model/import"
               ? "import"

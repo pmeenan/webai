@@ -26,7 +26,7 @@ function ggufArray(elementType: number, values: readonly Buffer[]): Buffer {
   return Buffer.concat([u32(elementType), u64(values.length), ...values]);
 }
 
-function ggufFixture(): Buffer {
+function ggufFixture(contextLength = 8192): Buffer {
   return Buffer.concat([
     Buffer.from("GGUF"),
     u32(3),
@@ -34,7 +34,7 @@ function ggufFixture(): Buffer {
     u64(5),
     ggufEntry("general.architecture", 8, ggufString("llama")),
     ggufEntry("general.name", 8, ggufString("Chat loading fixture")),
-    ggufEntry("llama.context_length", 4, u32(8192)),
+    ggufEntry("llama.context_length", 4, u32(contextLength)),
     ggufEntry(
       "tokenizer.ggml.tokens",
       9,
@@ -44,15 +44,59 @@ function ggufFixture(): Buffer {
   ]);
 }
 
-async function importChatFixture(page: Page): Promise<void> {
+async function importChatFixture(page: Page, contextLength = 8192): Promise<void> {
   await page.goto("./models/");
   await expect(page.getByText("No managed models yet")).toBeVisible();
   await page.getByLabel("Choose GGUF files").setInputFiles({
     name: "chat-load-Q4_K_M.gguf",
     mimeType: "application/octet-stream",
-    buffer: ggufFixture(),
+    buffer: ggufFixture(contextLength),
   });
   await expect(page.locator("[data-model-id]")).toContainText("chat-load-Q4_K_M.gguf");
+}
+
+async function stripChatFixtureInspection(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const result = <T>(request: IDBRequest<T>) =>
+      new Promise<T>((resolve, reject) => {
+        request.addEventListener("success", () => resolve(request.result), { once: true });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+      });
+    const database = await result(indexedDB.open("webai-v1"));
+    const read = database.transaction("models", "readonly");
+    const models = await result(read.objectStore("models").getAll());
+    const write = database.transaction("models", "readwrite");
+    for (const model of models) {
+      write.objectStore("models").put({
+        ...model,
+        files: model.files.map((file: { inspection?: Record<string, unknown> }) => {
+          if (file.inspection === undefined) return file;
+          const inspection = { ...file.inspection };
+          delete inspection.contextLength;
+          if (Array.isArray(inspection.entries)) {
+            inspection.entries = inspection.entries.filter(
+              (entry: unknown) =>
+                typeof entry !== "object" ||
+                entry === null ||
+                !("key" in entry) ||
+                typeof entry.key !== "string" ||
+                !entry.key.endsWith(".context_length"),
+            );
+          }
+          delete inspection.specialTokenInventoryInspected;
+          delete inspection.specialTokens;
+          delete inspection.specialTokenCount;
+          delete inspection.specialTokensTruncated;
+          return { ...file, inspection };
+        }),
+      });
+    }
+    await new Promise<void>((resolve, reject) => {
+      write.addEventListener("complete", () => resolve(), { once: true });
+      write.addEventListener("error", () => reject(write.error), { once: true });
+      write.addEventListener("abort", () => reject(write.error), { once: true });
+    });
+  });
 }
 
 test("gates chat on an installed model and reports the measured MTP limitation", async ({
@@ -68,6 +112,7 @@ test("gates chat on an installed model and reports the measured MTP limitation",
     page.getByText("mounts an MTP companion separately", { exact: false }),
   ).toBeVisible();
   await expect(page.getByPlaceholder("Load a model first")).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Thinking" })).toBeChecked();
   await expect(page.locator("#prompt-api-gate-reason")).toContainText("Gemini Nano");
 });
 
@@ -202,6 +247,10 @@ test("downloads and chats with browser-managed Gemini Nano on the shared surface
   await expect(page.getByLabel("Browser-managed model")).toHaveValue("gemini-nano");
   await expect(page.getByLabel("WASM threads")).toHaveCount(0);
   await expect(page.getByText("Stable web pages do not expose sampling controls")).toBeVisible();
+  await expect(page.getByRole("switch", { name: "Thinking" })).toBeDisabled();
+  await expect(
+    page.getByText("Chrome's Prompt API does not expose a thinking control."),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Download and load Gemini Nano" }).click();
   const progress = page.getByRole("progressbar", {
@@ -414,8 +463,8 @@ test("shows truthful staged UI while wllama loads stored model bytes", async ({ 
   });
   await page.goto("./chat/");
   await expect(page.getByLabel("Managed GGUF model")).not.toHaveValue("");
-  await expect(page.getByLabel("Context tokens")).toHaveValue("8192");
-  await expect(page.getByText("Model-declared maximum: 8,192")).toBeVisible();
+  await expect(page.getByLabel("Context (K tokens)")).toHaveValue("8");
+  await expect(page.getByText(/Model-declared maximum: 8 K tokens/u)).toBeVisible();
   await page.getByRole("button", { name: "Load model" }).click();
 
   const loadingPanel = page.locator(".chat-load-progress");
@@ -451,42 +500,7 @@ test("refreshes pre-diagnostic tokenizer metadata before loading an existing mod
   page,
 }) => {
   await importChatFixture(page);
-  await page.evaluate(async () => {
-    const result = <T>(request: IDBRequest<T>) =>
-      new Promise<T>((resolve, reject) => {
-        request.addEventListener("success", () => resolve(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
-      });
-    const database = await result(indexedDB.open("webai-v1", 1));
-    const read = database.transaction("models", "readonly");
-    const models = await result(read.objectStore("models").getAll());
-    const write = database.transaction("models", "readwrite");
-    for (const model of models) {
-      write.objectStore("models").put({
-        ...model,
-        files: model.files.map((file: { inspection?: Record<string, unknown> }) => {
-          if (file.inspection === undefined) return file;
-          const inspection = { ...file.inspection };
-          delete inspection.contextLength;
-          if (Array.isArray(inspection.entries)) {
-            inspection.entries = inspection.entries.filter(
-              (entry: unknown) =>
-                typeof entry !== "object" ||
-                entry === null ||
-                !("key" in entry) ||
-                typeof entry.key !== "string" ||
-                !entry.key.endsWith(".context_length"),
-            );
-          }
-          delete inspection.specialTokenInventoryInspected;
-          delete inspection.specialTokens;
-          delete inspection.specialTokenCount;
-          delete inspection.specialTokensTruncated;
-          return { ...file, inspection };
-        }),
-      });
-    }
-  });
+  await stripChatFixtureInspection(page);
   await page.route(`**${wllamaRuntimeAssets.script}`, async (route) => {
     await route.fulfill({
       status: 200,
@@ -505,10 +519,36 @@ test("refreshes pre-diagnostic tokenizer metadata before loading an existing mod
 
   await page.goto("./chat/");
   await expect(page.getByLabel("Managed GGUF model")).not.toHaveValue("");
-  await expect(page.getByLabel("Context tokens")).toHaveValue("2048");
-  await page.getByLabel("Context tokens").fill("4096");
+  await expect(page.getByLabel("Context (K tokens)")).toHaveValue("2");
   await page.getByRole("button", { name: "Load model" }).click();
   await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Context (K tokens)")).toHaveValue("8");
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          globalThis as typeof globalThis & {
+            __webaiRefreshLoadParameters?: { n_ctx?: number };
+          }
+        ).__webaiRefreshLoadParameters?.n_ctx,
+    ),
+  ).toBe(8192);
+
+  await stripChatFixtureInspection(page);
+  await page.evaluate(() => {
+    delete (
+      globalThis as typeof globalThis & {
+        __webaiRefreshLoadParameters?: { n_ctx?: number };
+      }
+    ).__webaiRefreshLoadParameters;
+  });
+  await page.reload();
+  await expect(page.getByLabel("Managed GGUF model")).not.toHaveValue("");
+  await expect(page.getByLabel("Context (K tokens)")).toHaveValue("2");
+  await page.getByLabel("Context (K tokens)").fill("4");
+  await page.getByRole("button", { name: "Load model" }).click();
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Context (K tokens)")).toHaveValue("4");
   expect(
     await page.evaluate(
       () =>
@@ -526,7 +566,7 @@ test("refreshes pre-diagnostic tokenizer metadata before loading an existing mod
           request.addEventListener("success", () => resolve(request.result), { once: true });
           request.addEventListener("error", () => reject(request.error), { once: true });
         });
-      const database = await result(indexedDB.open("webai-v1", 1));
+      const database = await result(indexedDB.open("webai-v1"));
       const transaction = database.transaction("models", "readonly");
       const models = await result(transaction.objectStore("models").getAll());
       return models.some((model) =>
@@ -537,6 +577,49 @@ test("refreshes pre-diagnostic tokenizer metadata before loading an existing mod
       );
     }),
   ).toBe(true);
+});
+
+test("keeps a non-whole-K model context maximum valid and passes exact tokens", async ({
+  page,
+}) => {
+  await importChatFixture(page, 2500);
+  await page.route(`**${wllamaRuntimeAssets.script}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/javascript",
+      body: `
+        export class Wllama {
+          setCompat() {}
+          async loadModel(_files, parameters) {
+            globalThis.__webaiNonWholeContextParameters = parameters;
+          }
+          async exit() {}
+        }
+      `,
+    });
+  });
+
+  await page.goto("./chat/");
+  const context = page.getByLabel("Context (K tokens)");
+  await expect(context).toHaveValue("2.44140625");
+  expect(await context.evaluate((input: HTMLInputElement) => input.checkValidity())).toBe(true);
+  await context.fill("2.1");
+  await context.blur();
+  await expect(context).toHaveValue("2.44140625");
+  expect(await context.evaluate((input: HTMLInputElement) => input.checkValidity())).toBe(true);
+
+  await page.getByRole("button", { name: "Load model" }).click();
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          globalThis as typeof globalThis & {
+            __webaiNonWholeContextParameters?: { n_ctx?: number };
+          }
+        ).__webaiNonWholeContextParameters?.n_ctx,
+    ),
+  ).toBe(2500);
 });
 
 test("clears loading state and exposes a retry after wllama rejects a model", async ({ page }) => {
@@ -669,13 +752,19 @@ test("streams reasoning-capable output and keeps response metrics compact", asyn
 
   await page.goto("./chat/");
   await expect(page.getByLabel("Managed GGUF model")).not.toHaveValue("");
-  await expect(page.getByLabel("Context tokens")).toHaveValue("8192");
-  await page.getByLabel("Context tokens").fill("7168");
-  await expect(page.getByLabel("Context tokens")).toHaveValue("7168");
+  const thinkingRequest = page.getByRole("switch", { name: "Thinking" });
+  await expect(thinkingRequest).toBeChecked();
+  await thinkingRequest.uncheck();
+  await expect(thinkingRequest).not.toBeChecked();
+  await expect(page.getByLabel("Context (K tokens)")).toHaveValue("8");
+  await page.getByLabel("Context (K tokens)").fill("7.1");
+  await page.getByLabel("Context (K tokens)").blur();
+  await expect(page.getByLabel("Context (K tokens)")).toHaveValue("8");
   await page.getByRole("button", { name: "Load model" }).click();
   await expect(page.getByText("Ready", { exact: true })).toBeVisible();
   await page.getByLabel("Message").fill("Give me a visible answer.");
   await page.getByRole("button", { name: "Send" }).click();
+  await expect(thinkingRequest).toBeDisabled();
 
   const response = page.locator(".chat-message-assistant");
   const thinking = response.locator("details.response-channel");
@@ -724,6 +813,7 @@ test("streams reasoning-capable output and keeps response metrics compact", asyn
           max_tokens?: number;
           logprobs?: boolean;
           top_logprobs?: number;
+          chat_template_kwargs?: { enable_thinking?: boolean };
         };
       };
       return {
@@ -733,18 +823,21 @@ test("streams reasoning-capable output and keeps response metrics compact", asyn
         maxTokens: state.__webaiCompletionParameters?.max_tokens,
         logprobs: state.__webaiCompletionParameters?.logprobs,
         topLogprobs: state.__webaiCompletionParameters?.top_logprobs,
+        thinking: state.__webaiCompletionParameters?.chat_template_kwargs?.enable_thinking,
         loadedFileNames: state.__webaiLoadedFileNames,
       };
     }),
   ).toEqual({
     reasoningFormat: "none",
     contextShift: false,
-    contextTokens: 7168,
+    contextTokens: 8192,
     maxTokens: -1,
     logprobs: true,
     topLogprobs: 1,
+    thinking: false,
     loadedFileNames: ["chat-load-Q4_K_M.gguf"],
   });
+  await expect(thinkingRequest).toBeEnabled();
 
   const selectionColors = await page
     .locator(".chat-message-user .chat-message-content")
@@ -753,6 +846,75 @@ test("streams reasoning-capable output and keeps response metrics compact", asyn
       selection: getComputedStyle(element, "::selection").backgroundColor,
     }));
   expect(selectionColors.selection).not.toBe(selectionColors.bubble);
+});
+
+test("changes the thinking template request between prompts without reloading", async ({
+  page,
+}) => {
+  await importChatFixture(page);
+  await page.route(`**${wllamaRuntimeAssets.script}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/javascript",
+      body: `
+        export class Wllama {
+          setCompat() {}
+          async loadModel() {
+            globalThis.__webaiThinkingLoadCount =
+              (globalThis.__webaiThinkingLoadCount ?? 0) + 1;
+          }
+          async *createChatCompletion(parameters) {
+            globalThis.__webaiThinkingRequests = [
+              ...(globalThis.__webaiThinkingRequests ?? []),
+              parameters.chat_template_kwargs?.enable_thinking,
+            ];
+            yield { choices: [{ delta: { content: "Local reply." } }] };
+            yield {
+              choices: [],
+              usage: { prompt_tokens: 4, completion_tokens: 2 },
+              timings: {
+                prompt_n: 4,
+                prompt_per_second: 8,
+                predicted_n: 2,
+                predicted_per_second: 4,
+              },
+            };
+          }
+          async exit() {}
+        }
+      `,
+    });
+  });
+
+  await page.goto("./chat/");
+  await page.getByRole("button", { name: "Load model" }).click();
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  const thinkingRequest = page.getByRole("switch", { name: "Thinking" });
+  const composer = page.getByLabel("Message");
+  await expect(thinkingRequest).toBeChecked();
+  await composer.fill("Use thinking.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".chat-message-assistant")).toHaveCount(1);
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+
+  await thinkingRequest.uncheck();
+  await composer.fill("Skip thinking.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".chat-message-assistant")).toHaveCount(2);
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+
+  expect(
+    await page.evaluate(() => {
+      const state = globalThis as typeof globalThis & {
+        __webaiThinkingLoadCount?: number;
+        __webaiThinkingRequests?: boolean[];
+      };
+      return {
+        loads: state.__webaiThinkingLoadCount,
+        requests: state.__webaiThinkingRequests,
+      };
+    }),
+  ).toEqual({ loads: 1, requests: [true, false] });
 });
 
 test("coalesces a runaway token stream without blocking the page", async ({ page }) => {
@@ -791,4 +953,69 @@ test("coalesces a runaway token stream without blocking the page", async ({ page
     500_000,
   );
   await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+});
+
+test("stops a wllama response even when the runtime does not poll its abort signal", async ({
+  page,
+}) => {
+  await importChatFixture(page);
+  await page.route(`**${wllamaRuntimeAssets.script}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/javascript",
+      body: `
+        export class Wllama {
+          setCompat() {}
+          async loadModel() {}
+          async *createChatCompletion() {
+            yield { choices: [{ delta: { content: "Runaway partial output.<|cha" } }] };
+            await new Promise(() => {});
+          }
+          async exit() {
+            globalThis.__webaiStoppedGenerationExitCalls =
+              (globalThis.__webaiStoppedGenerationExitCalls ?? 0) + 1;
+          }
+        }
+      `,
+    });
+  });
+
+  await page.goto("./chat/");
+  await page.getByRole("button", { name: "Load model" }).click();
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  await page.getByLabel("Message").fill("Do not stop on your own.");
+  await page.getByRole("button", { name: "Send" }).click();
+  const partialOutput = page.locator(".chat-message-assistant .chat-message-content");
+  await expect(partialOutput).toHaveText("Runaway partial output.");
+  await page.getByRole("button", { name: "Stop" }).click();
+
+  await expect(page.getByText("No session", { exact: true })).toBeVisible();
+  await expect(partialOutput).toHaveText("Runaway partial output.<|cha");
+  await expect(page.getByText("Stopped response. Partial output remains visible.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Load model" })).toBeEnabled();
+  await expect(page.getByLabel("Message")).toBeDisabled();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          globalThis as typeof globalThis & {
+            __webaiStoppedGenerationExitCalls?: number;
+          }
+        ).__webaiStoppedGenerationExitCalls,
+    ),
+  ).toBe(1);
+});
+
+test.describe("chat coarse-pointer layout", () => {
+  test.use({ hasTouch: true });
+
+  test("keeps the thinking switch at the coarse-pointer target height", async ({ page }) => {
+    await page.goto("./chat/");
+    expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
+    const height = await page
+      .locator(".chat-thinking-toggle")
+      .evaluate((element) => element.getBoundingClientRect().height);
+    expect(height).toBeGreaterThanOrEqual(44);
+  });
 });

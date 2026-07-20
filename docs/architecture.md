@@ -322,8 +322,8 @@ manager” does not falsely imply that every runtime lets WebAI own every byte.
   their source and transformation version.
 - **IndexedDB `webai-v1`** holds small structured state: model/artifact manifests,
   source/ref metadata, download jobs and checkpoints, native-cache inventory,
-  settings, a dedicated HF credential record, chats, benchmark specs/results, and
-  schema migrations. Credential records are excluded from ordinary settings export.
+  settings, chats, benchmark specs/results, and schema migrations. Version 3 removes
+  the retired Hugging Face credential store (D-042).
 - **Cache Storage/runtime databases** are used only where an adapter's supported
   integration requires native caching. They remain adapter-owned data planes but are
   indexed in WebAI's manifest when enumerable.
@@ -332,7 +332,7 @@ manager” does not falsely imply that every runtime lets WebAI own every byte.
   not have.
 
 Local storage is limited to tiny non-sensitive boot preferences if needed. Model
-manifests, tokens, chats, and results do not depend on it.
+manifests, chats, and results do not depend on it.
 
 ### Manifest and ownership
 
@@ -498,6 +498,12 @@ and the indeterminate engine/weight load without inventing byte progress.
 The pinned ESM is transformed at copy time to drain native result records until both
 the payload and task flag are empty; an exact-source assertion and content hash make
 the wllama 3.5.1 workaround fail closed on upgrades (RE-023, D-029).
+The same guarded transformation makes worker termination reject every queued and
+callback-waiting proxy task. During generation the adapter races stream consumption
+against request abort; Stop terminates the dedicated worker, clears the active session,
+flushes partial output, and settles Chat without waiting for the next native result.
+Because the pinned wrapper exposes no bounded native per-completion interrupt, this
+emergency path intentionally requires a model reload (RE-028, D-039).
 The adapter requests no fixed output ceiling (`max_tokens: -1`) while disabling
 context shifting, so EOS or the configured context ends generation. A bounded
 incremental parser recognizes fragmented explicit channel markers; active intermediate
@@ -513,7 +519,8 @@ channel text. Unmarked output remains ordinary final text if no marker arrives; 
 precedes a named marker or Gemma 4's bare boundary, it is reclassified as a non-final
 preamble or thinking channel. GGUF inspection promotes a plausible architecture
 `context_length` so Chat can default to the selected model's trained maximum before
-load, expose 256-token steps and exact numeric entry, preserve valid user overrides
+load, expose K-token entry (1 K = 1,024 tokens) with positive fractional values rounded
+upward to the next whole K, preserve valid user overrides
 across load-time reinspection, and show the same declared value on the model card.
 This metadata is not a browser-memory guarantee. Inspection also records a bounded
 index of GGUF-declared unknown/control/user-defined/unused tokenizer items. Chat
@@ -521,7 +528,12 @@ validates logprob token IDs against that index, filters the channel dialect it a
 understands, and presents up to 32 unknown/control/user-defined/unused IDs in a closed
 per-response diagnostic disclosure. Counts are coalesced with response rendering,
 overflow is explicit, model text is rendered as text, and no feedback leaves the
-browser (D-029).
+browser (D-029). Chat snapshots its Thinking switch for each wllama prompt and passes
+the requested boolean through `chat_template_kwargs.enable_thinking`. That template
+argument may be ignored by models that do not implement it, so the UI does not report
+an effective value; generated reasoning remains visible regardless. The Prompt API
+adapter rejects this optional request because Chrome exposes no corresponding control
+(D-038, RE-027).
 The worker-to-page protocol independently validates every optional special-token
 field and its bounds before runtime or UI code consumes it. A generated TypeScript
 asset manifest is checked alongside the pinned wllama bytes so an asset update cannot
@@ -585,6 +597,110 @@ browser-reported `contextUsage`/`contextWindow` and leaves token counts, prefill
 rates, backend identity, model bytes, and memory unavailable. Standard web pages
 expose no stable sampling control, so the UI labels sampling and backend selection as
 browser-managed instead of inventing parameters.
+
+### M5 implementation profile
+
+D-031 adds model discovery to the existing model worker and Models island so browse
+downloads use M2's acquisition scheduler, locks, durable jobs, range checks, hashes,
+and inventory refresh without a second control plane. Search requests are explicit
+user actions. The worker requests small server-filtered candidate pages, validates the
+opaque next link, and resolves candidates at the search result's immutable commit.
+Nominal quantization bits and maximum bytes are evaluated only over the resulting
+explicit GGUF choice/shard sets; declared capability and minimum-context filters use
+bounded revision metadata with a separate needs-verification state. Each operation is
+bounded to 128 eight-candidate pages / 1,024 candidates, uses two concurrent enrichments,
+automatically follows validated cursors until results end, deduplicates repositories
+across cursor pages while retaining `(repo, commit)` as the enrichment/cache identity,
+and caches successful
+anonymous enrichment by `(repo, commit)` in D-032's disposable SQLite/OPFS catalog,
+falling back to the original eight-entry memory LRU. The catalog holds at most 512
+current snapshots and 64 MiB of raw JSON; every hit is reparsed through the same
+boundary after its stored and measured UTF-8 sizes pass the same 8 MiB limit.
+All Hub traffic is anonymous. Candidates explicitly reported as private or gated are
+excluded before detail enrichment. A pinned response must explicitly confirm public,
+ungated access; its visibility/gate mode overrides stale list values. Restricted or
+ambiguous access is never cached or offered for download. Public/private visibility
+remains separate from gate mode in the worker protocol and installed source provenance.
+Results
+distinguish confirmed matches, declared-metadata needs-verification, confirmed
+exclusions, and inspection/access failures. Capability selections are AND requirements.
+Missing supplemental metadata never becomes incompatible, but a declared primary
+`pipeline_tag` that contradicts a selected primary capability is excluded without
+letting ordinary tags mask that provenance; confirmed groups sort
+before verification-only groups. A browse event returns at most 1,024 inspected repositories across all
+visible categories, with at most 64 matching
+choices and 256 referenced files per repository, reports omitted matches, and sends
+only that canonical subset across the worker boundary. Visible and unknown records
+share a 32-MiB serialized-byte budget checked during construction and protocol parsing;
+reaching it returns a labeled truncated result. The page completes each fetched
+page rather than losing an unaddressable cursor tail.
+Discovery producers and the worker protocol share exported artifact boundaries:
+quantization labels are at most 128 characters and each artifact has at most 256 files,
+including any optional MTP companion. Oversized shard groups fail as metadata-invalid
+before an event is posted, and a terminal protocol failure stops the worker so later
+background activity cannot mutate page state (D-041).
+
+The catalog is derived state at `/webai/v1/hugging-face-catalog.sqlite3`, separate from
+the authoritative IndexedDB manifest. It stores the entire bounded explicitly
+public-and-open anonymous
+revision-info response so later parser/index changes can reuse fields that the current
+UI does not yet expose. Short parameterized SQLite operations use the regular OPFS VFS
+and an opportunistic `webai-hugging-face-catalog-v1` Web Lock. Same-worker operations
+queue locally so two-wide enrichment can persist and read every candidate;
+cross-context contention or any
+initialization, quota, schema,
+locking, or corruption error is a cache miss/fallback, never an acquisition failure.
+The catalog reads its `schema_version` marker at open and drops/recreates this entirely
+derived cache when the marker is missing or unknown; it never guesses compatibility
+with future tables (D-041).
+The Models UI reports row/byte counts and cache hits. Its result browser uses declared
+architecture as a broad navigation facet, not as evidence of genealogy, then groups by
+immediate declared/inferred HF base-model relation and repository variant, with a
+persistent selected detail panel; no filename-based ancestry is invented. The detail
+panel distinguishes its revision-pinned model-card/file links from the mutable current
+model page. D-033 annotates family/model/repository/detail tiers from reconciled exact
+`repo@commit` inventory identities and requires the full canonical source-file identity
+before one artifact choice is called downloaded. For the selected result only, the
+worker recursively follows immediate parent metadata into a reported ancestry DAG with
+32-node, 16-parent, cycle, and two-request-concurrency bounds. Traversal has no separate
+depth cutoff and follows each branch to a terminal ancestor or the node boundary. The UI
+reverses the API's child-to-parent edges so linked base repositories appear above their
+descendants; only admitted nodes are rendered, and out-of-row warnings identify
+unavailable/access-required nodes or omitted ancestry. Commit/relation/cache detail stays out of the normal tree. Parent commits
+remain current observations internally, not child-pinned provenance. Public/open lineage responses
+live in a separate 24-hour `lineage_snapshots` table so their minimal current-repo shape
+cannot overwrite full immutable revision snapshots. A lineage response is capped at 256 KiB (under 8 MiB for the bounded
+traversal), and the SQLite and memory implementations share the 512-row/64-MiB budget
+across both snapshot kinds. The filter disclosure collapses after a valid request begins but preserves
+and summarizes the active controls for refinement. Draft edits keep the prior result
+hierarchy visible and marked stale until a new search replaces it. Users never manage
+cursor pages. The visible 32 K minimum-context and 4 GiB maximum-download values are
+actual initial filters, and clearing either input restores its default rather than
+turning that filter off. A search exhausts the bounded pass and labels the result if the safety
+boundary requires narrower filters. The worker streams completed page/candidate counts,
+and Stop remains visible outside the collapsed filters. An indeterminate progress bar
+appears only when the pass lasts beyond one second, avoiding a flash for cached/short
+searches. User Stop aborts the active request/backoff, then returns the same bounded
+accumulator as a validated result marked stopped; fully processed matches remain
+navigable while the unresolved two-wide batch is not counted. A stopped snapshot never
+triggers automatic ancestry requests, and browse/
+lineage retry notices are request-ID scoped so a canceled pass cannot overwrite the
+status of its replacement. Family and model groups sort by
+exact aggregate reported 30-day Hub downloads across their visible repository variants;
+missing counts remain explicit. At four-column widths the three navigation tiers and
+the static detail panel share one viewport-bounded height with independent scrolling.
+
+IndexedDB version 3 deletes the retired HF credential store without changing OPFS or
+the model schema. The page and worker expose no token operations. A legacy partial job
+whose source explicitly records private or gated access disables Resume and can be
+discarded; already installed local bytes remain available. Anonymous Fetch follows
+transient signed redirects; WebAI retains only the commit/path/size/hash identity and
+still validates the final 206 interval.
+Publisher license, including a bounded custom `cardData.license_name` when the tag is
+the generic `license:other`, gate mode, and task are bounded text provenance stored
+with remote model sources, not compatibility or entitlement claims. Suitability shows exact
+artifact bytes against the origin quota estimate and explicitly leaves runtime memory
+unknown.
 
 ## Chat and benchmark consumers
 
@@ -694,9 +810,8 @@ token-count method, concurrency, or cold/warm state differs.
 - Network destinations are an allowlist implemented at call sites: same-origin app
   assets, Hugging Face API/resolver traffic initiated by model workflows, and the
   browser-owned Prompt API acquisition flow. Model-generated URLs are never fetched.
-- HF tokens remain local in the dedicated IndexedDB credential record, are attached
-  only to intended HF requests, are excluded/redacted from exports and logs, and stay
-  inside the dedicated `webai.meenan.dev` origin trust boundary (D-024).
+- Hugging Face traffic is anonymous and restricted repositories are excluded. WebAI
+  stores no HF token and emits no Authorization header (D-042).
 - CSP and deployed headers are defense in depth, not a substitute for text-only
   rendering, validated messages, bounded parsing, and pinned self-hosted executable
   assets.

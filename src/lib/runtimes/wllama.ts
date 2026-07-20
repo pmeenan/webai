@@ -4,12 +4,13 @@ import { ModelOperationError } from "../models/types";
 import { ChannelStreamParser } from "./channel-parser";
 import type {
   GenerationEvent,
+  GenerationOptions,
+  RuntimeAdapter,
   RuntimeDescriptor,
   RuntimeLoadEvent,
-  RuntimeAdapter,
+  WllamaBackend,
   WllamaRuntimeDescriptor,
   WllamaRuntimeSession,
-  WllamaBackend,
 } from "./types";
 import { wllamaRuntimeAssets } from "./wllama-assets";
 import { isWllamaMtpCompanion, wllamaModelCompatibility } from "./wllama-compatibility";
@@ -72,6 +73,7 @@ interface WllamaInstance {
     readonly temperature: number;
     readonly top_k: number;
     readonly top_p: number;
+    readonly chat_template_kwargs?: { readonly enable_thinking: boolean };
     readonly abortSignal: AbortSignal;
   }): Promise<AsyncIterable<ChatCompletionChunk>>;
   exit(): Promise<void>;
@@ -320,6 +322,7 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
 
   async generate(
     messages: readonly { readonly role: "user" | "assistant"; readonly content: string }[],
+    options: GenerationOptions,
     signal: AbortSignal,
     onEvent: (event: GenerationEvent) => void,
   ): Promise<void> {
@@ -353,6 +356,23 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
     let omittedDiagnosticOccurrences = 0;
     let diagnosticsDirty = false;
     let lastChannelUpdateAt = started;
+    let rejectStopped: ((reason: DOMException) => void) | undefined;
+    const stopped = new Promise<never>((_resolve, reject) => {
+      rejectStopped = reject;
+    });
+    const stop = () => {
+      if (this.#runtime === runtime) {
+        this.#lifecycle += 1;
+        this.#runtime = undefined;
+        this.#session = undefined;
+      }
+      // wllama 3.5.1 only polls AbortSignal between native result requests. Exiting
+      // its dedicated worker is the bounded cancellation path for an in-flight poll.
+      void runtime.exit().catch(() => undefined);
+      rejectStopped?.(new DOMException("Generation was stopped.", "AbortError"));
+    };
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
     const emitPending = () => {
       let emitted = false;
       if (pendingText.length > 0) {
@@ -413,44 +433,53 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
       }
     };
     try {
-      const stream = await runtime.createChatCompletion({
-        messages: messages.map((message) => ({ role: message.role, content: message.content })),
-        stream: true,
-        stream_options: { include_usage: true },
-        timings_per_token: true,
-        logprobs: true,
-        top_logprobs: 1,
-        max_tokens: -1,
-        temperature: 0.7,
-        top_k: 40,
-        top_p: 0.95,
-        abortSignal: signal,
-      });
-      for await (const chunk of stream) {
-        signal.throwIfAborted();
-        usage = chunk.usage ?? usage;
-        timings = chunk.timings ?? timings;
-        const choice = chunk.choices[0];
-        inspectLogprobs(choice?.logprobs?.content);
-        const text = choice?.delta?.content;
-        if (typeof text === "string" && text.length > 0) {
-          pendingText += text;
-          if (
-            firstTokenAt === undefined ||
+      const consumeStream = async () => {
+        const stream = await runtime.createChatCompletion({
+          messages: messages.map((message) => ({ role: message.role, content: message.content })),
+          stream: true,
+          stream_options: { include_usage: true },
+          timings_per_token: true,
+          logprobs: true,
+          top_logprobs: 1,
+          max_tokens: -1,
+          temperature: 0.7,
+          top_k: 40,
+          top_p: 0.95,
+          ...(options.thinking === undefined
+            ? {}
+            : { chat_template_kwargs: { enable_thinking: options.thinking } }),
+          abortSignal: signal,
+        });
+        for await (const chunk of stream) {
+          signal.throwIfAborted();
+          usage = chunk.usage ?? usage;
+          timings = chunk.timings ?? timings;
+          const choice = chunk.choices[0];
+          inspectLogprobs(choice?.logprobs?.content);
+          const text = choice?.delta?.content;
+          if (typeof text === "string" && text.length > 0) {
+            pendingText += text;
+            if (
+              firstTokenAt === undefined ||
+              performance.now() - lastChannelUpdateAt >= channelUpdateIntervalMs
+            ) {
+              emitPending();
+            }
+          } else if (
+            diagnosticsDirty &&
             performance.now() - lastChannelUpdateAt >= channelUpdateIntervalMs
           ) {
             emitPending();
           }
-        } else if (
-          diagnosticsDirty &&
-          performance.now() - lastChannelUpdateAt >= channelUpdateIntervalMs
-        ) {
-          emitPending();
         }
-      }
+      };
+      await Promise.race([consumeStream(), stopped]);
     } catch (error) {
       emitPending();
+      onEvent({ type: "channels", channels: channelParser.finish() });
       throw safeRuntimeFailure(error, "generate");
+    } finally {
+      signal.removeEventListener("abort", stop);
     }
     emitPending();
     onEvent({ type: "channels", channels: channelParser.finish() });

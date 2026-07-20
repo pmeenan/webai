@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "astro dev",
+    "prebuild": "corepack pnpm runtime:wllama-assets:check",
     "build": "astro build",
     "preview": "astro preview",
     "typecheck": "astro check && tsc --project tsconfig.browser.json && tsc --project tsconfig.test.json && tsc --project tsconfig.node.json",
@@ -31,6 +32,7 @@
     "@fontsource-variable/jetbrains-mono": "5.2.8",
     "@noble/hashes": "2.2.0",
     "@radix-ui/react-dropdown-menu": "2.1.20",
+    "@sqlite.org/sqlite-wasm": "3.53.0-build1",
     "@tailwindcss/vite": "4.3.3",
     "@wllama/wllama": "3.5.1",
     "@wllama/wllama-compat": "3.5.1",
