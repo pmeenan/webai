@@ -13,10 +13,10 @@ import { ModelOperationError, modelSchemaVersion } from "./types";
 import { createSha256 } from "./hashing";
 
 const databaseName = "webai-v1";
-const databaseVersion = 3;
+const databaseVersion = 4;
 const rootPath = ["webai", "v1"] as const;
 
-type StoreName = "models" | "jobs" | "blobs";
+type StoreName = "models" | "jobs" | "blobs" | "chats";
 const storageOperationTimeoutMs = 5_000;
 
 async function boundedStorageOperation<T>(operation: () => Promise<T>): Promise<T | undefined> {
@@ -164,7 +164,7 @@ export function openModelDatabase(): Promise<IDBDatabase> {
       const database = request.result;
       if (database.objectStoreNames.contains("credentials"))
         database.deleteObjectStore("credentials");
-      for (const store of ["models", "jobs", "blobs"] as const) {
+      for (const store of ["models", "jobs", "blobs", "chats"] as const) {
         if (!database.objectStoreNames.contains(store))
           database.createObjectStore(store, { keyPath: "id" });
       }

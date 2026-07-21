@@ -84,6 +84,7 @@ describe("PromptApiRuntimeAdapter", () => {
           readonly expectedInputs: readonly unknown[];
           readonly expectedOutputs: readonly unknown[];
           readonly signal: AbortSignal;
+          readonly initialPrompts?: readonly unknown[];
         }
       | undefined;
     const session = Object.assign(new EventTarget(), {
@@ -120,7 +121,12 @@ describe("PromptApiRuntimeAdapter", () => {
 
     const adapter = new PromptApiRuntimeAdapter();
     await expect(adapter.probe()).resolves.toMatchObject({ availability: "downloadable" });
-    const creation = adapter.createSession((event) => progress.push(event));
+    const initialPrompts = [
+      { role: "system" as const, content: "Be concise." },
+      { role: "user" as const, content: "Previous question" },
+      { role: "assistant" as const, content: "Previous answer" },
+    ];
+    const creation = adapter.createSession(initialPrompts, (event) => progress.push(event));
     expect(createCalls).toBe(1);
     await expect(creation).resolves.toMatchObject({
       runtimeId: "prompt-api",
@@ -131,6 +137,7 @@ describe("PromptApiRuntimeAdapter", () => {
     expect(createOptions?.expectedInputs).toEqual([{ type: "text", languages: ["en"] }]);
     expect(createOptions?.expectedOutputs).toEqual([{ type: "text", languages: ["en"] }]);
     expect(createOptions?.signal).toBeInstanceOf(AbortSignal);
+    expect(createOptions?.initialPrompts).toEqual(initialPrompts);
     expect(progress).toEqual([
       { phase: "browser-model-download", loaded: 0.25, total: 1 },
       { phase: "browser-model-loading" },
@@ -208,9 +215,26 @@ describe("PromptApiRuntimeAdapter", () => {
       ).rejects.toMatchObject({
         failure: {
           code: "unsupported",
-          message: expect.stringContaining("does not expose a thinking control"),
+          message: expect.stringContaining("does not expose these generation controls"),
         },
       });
+
+    for (const options of [
+      { temperature: 0.5 },
+      { topP: 0.9 },
+      { topK: 10 },
+      { maxTokens: 20 },
+      { repeatPenalty: 1.1 },
+      { seed: 42 },
+    ])
+      await expect(
+        adapter.generate(
+          [{ role: "user", content: "try unsupported controls" }],
+          options,
+          new AbortController().signal,
+          () => undefined,
+        ),
+      ).rejects.toMatchObject({ failure: { code: "unsupported" } });
 
     await adapter.dispose();
     expect(session.destroy).toHaveBeenCalledOnce();

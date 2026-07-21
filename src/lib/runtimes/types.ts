@@ -9,6 +9,24 @@ export interface RuntimeDescriptor {
   readonly engineVersion: string;
   readonly acquisitionOwnership: "app-file" | "browser-managed";
   readonly executionContext: "adapter-owned-library-worker" | "browser-managed-main-thread";
+  readonly generationControls: {
+    readonly systemPrompt: boolean;
+    readonly temperature: boolean;
+    readonly topP: boolean;
+    readonly topK: boolean;
+    readonly maxTokens: boolean;
+    readonly repeatPenalty: boolean;
+    readonly seed: boolean;
+  };
+  readonly contextCaching: {
+    readonly supported: boolean;
+    readonly kind: "runtime-prefix-kv" | "browser-managed-state" | "none";
+    readonly explanation: string;
+  };
+  readonly tokenizerInspection: {
+    readonly kind: "sampled-output" | "context-usage-only";
+    readonly explanation: string;
+  };
 }
 
 export interface WllamaRuntimeDescriptor extends RuntimeDescriptor {
@@ -40,20 +58,63 @@ export interface EffectiveWllamaBackend extends WllamaBackend {
   readonly webgpuAvailable: boolean;
 }
 
+export type ExecutionModelTarget =
+  | {
+      readonly kind: "artifact-set";
+      readonly modelId: string;
+      readonly displayName: string;
+      readonly files: readonly {
+        readonly displayName: string;
+        readonly size: number;
+        readonly sha256: string;
+      }[];
+      readonly source:
+        | { readonly kind: "hugging-face"; readonly repo: string; readonly commit: string }
+        | { readonly kind: "local-import"; readonly sha256: readonly string[] };
+    }
+  | { readonly kind: "unresolved"; readonly runtimeId: RuntimeId; readonly displayName: string }
+  | {
+      readonly kind: "browser-managed";
+      readonly runtimeId: "prompt-api";
+      readonly model: "gemini-nano";
+    };
+
+export interface WllamaSessionConfiguration {
+  readonly threads: number;
+  readonly gpuMode: "full" | "partial" | "off";
+  readonly gpuLayers: number;
+  readonly contextSize: number;
+}
+
+export interface ExecutionProvenance {
+  readonly runtimeId: RuntimeId;
+  readonly adapterVersion: string;
+  readonly engineVersion: string;
+  readonly modelTarget: ExecutionModelTarget;
+  readonly systemPrompt: string;
+  readonly wllamaSession?: WllamaSessionConfiguration;
+  readonly effectiveWllamaBackend?: EffectiveWllamaBackend;
+}
+
 export interface ChatMessage {
   readonly id: string;
   readonly runtimeId: RuntimeId;
   readonly role: "user" | "assistant";
   readonly content: string;
+  readonly replaySourceTurnId?: string;
   readonly channels?: readonly ResponseChannel[];
   readonly metrics?: ResponseMetrics;
   readonly outputDiagnostics?: ModelOutputDiagnostics;
+  readonly tokenization?: TokenizationInspection;
+  readonly request?: GenerationOptions;
+  readonly controlOutcomes?: readonly GenerationControlOutcome[];
   readonly failure?: ModelFailure;
   readonly warnings?: readonly RuntimeWarning[];
+  readonly execution?: ExecutionProvenance;
 }
 
 export interface RuntimeWarning {
-  readonly code: "context-overflow";
+  readonly code: "context-overflow" | "output-normalized" | "output-truncated";
   readonly message: string;
 }
 
@@ -84,11 +145,24 @@ export interface ResponseMetrics {
   readonly timeToFirstOutputMs?: number;
   readonly promptTokens?: number;
   readonly completionTokens?: number;
+  readonly cachedPromptTokens?: number;
+  readonly evaluatedPromptTokens?: number;
   readonly prefillTokensPerSecond?: number;
   readonly decodeTokensPerSecond?: number;
   readonly totalTimeMs: number;
   readonly contextUsage?: number;
   readonly contextWindow?: number;
+}
+
+export interface TokenizationToken {
+  readonly id: number;
+  readonly text: string;
+}
+
+export interface TokenizationInspection {
+  readonly method: "wllama-sampled-logprobs";
+  readonly tokens: readonly TokenizationToken[];
+  readonly omittedTokens: number;
 }
 
 export interface WllamaRuntimeSession {
@@ -140,6 +214,7 @@ export type GenerationEvent =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "channels"; readonly channels: readonly ResponseChannel[] }
   | { readonly type: "output-diagnostics"; readonly diagnostics: ModelOutputDiagnostics }
+  | { readonly type: "tokenization"; readonly tokenization: TokenizationInspection }
   | { readonly type: "warning"; readonly warning: RuntimeWarning }
   | { readonly type: "metrics"; readonly metrics: ResponseMetrics };
 
@@ -149,12 +224,31 @@ export interface GenerationOptions {
    * the runtime's default; adapters must not imply support when they cannot pass it.
    */
   readonly thinking?: boolean;
+  readonly temperature?: number;
+  readonly topP?: number;
+  readonly topK?: number;
+  readonly maxTokens?: number;
+  readonly repeatPenalty?: number;
+  readonly seed?: number;
+}
+
+export interface GenerationControlOutcome {
+  readonly control: keyof GenerationOptions;
+  readonly requested: boolean | number;
+  readonly effective?: boolean | number;
+  readonly status: "honored" | "requested-not-verifiable" | "unsupported";
+  readonly explanation: string;
+}
+
+export interface RuntimeMessage {
+  readonly role: "system" | "user" | "assistant";
+  readonly content: string;
 }
 
 export interface RuntimeAdapter {
   readonly descriptor: RuntimeDescriptor;
   generate(
-    messages: readonly { readonly role: "user" | "assistant"; readonly content: string }[],
+    messages: readonly RuntimeMessage[],
     options: GenerationOptions,
     signal: AbortSignal,
     onEvent: (event: GenerationEvent) => void,

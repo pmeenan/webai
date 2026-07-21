@@ -23,6 +23,130 @@ Decision / Context / Consequences / Reopen if
 
 ---
 
+## D-044: M6 records runtime-native controls, token evidence, and prefix reuse without false parity  (2026-07-19, status: accepted)
+
+**Decision:** wllama Chat exposes temperature, top-p, top-k, repeat penalty, optional
+maximum output tokens, and an optional unsigned seed below llama.cpp's random sentinel.
+The default 42 seed makes the request configuration repeatable; clearing it requests
+runtime randomness. Clearing the output limit retains M3's EOS/configured-context
+boundary. Every assistant response snapshots the exact request and a terminal control
+outcome. Ordinary wllama controls are `honored` because the pinned wrapper forwards
+them; Thinking remains `requested-not-verifiable` under D-038. Stable-web Prompt API
+sessions record sampling and seed as unavailable rather than approximating them.
+
+wllama sends `cache_prompt: true` and retains validated native `cache_n` evidence as
+cached-prefix tokens when it is returned. Full prompt, evaluated prompt, completion,
+and configured-context counts remain distinct. This is runtime-native reuse evidence,
+not a speedup claim. Prompt API state is labelled `browser-managed-state`: Chrome
+retains the session conversation but exposes neither KV mechanics nor cache-hit counts.
+KV/runtime state remains ephemeral and is never serialized.
+
+The tokenizer inspector retains at most 512 validated sampled wllama output token
+IDs/pieces, with bounded piece text and an explicit omission count. It does not claim
+input tokenization. Prompt API exposes only implementation-defined
+`contextUsage`/`contextWindow`, explicitly not token identities or necessarily token
+units.
+
+**Context:** Pinned `@wllama/wllama` 3.5.1 declarations and source were inspected on
+2026-07-19: chat completion accepts all controls above plus `cache_prompt`, and timing
+records contain `cache_n`; the v3 migration guide says low-level tokenize/detokenize
+APIs were removed. Controlled Chrome tests capture exact parameter/system-message
+forwarding, the default unlimited output mapping, native count/cache display, bounded
+sampled pieces, and request snapshots. Current official Chrome Prompt API docs and the
+Community Group draft, checked 2026-07-19, continue to restrict sampling controls on
+stable web and deliberately abstract tokenization/context units.
+[Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api),
+[Community Group Prompt API](https://webmachinelearning.github.io/prompt-api/).
+
+**Consequences:** An exported explicit seed reproduces the configured request, not an
+output guarantee across engine versions, model bytes, backend, thread count, or
+browser changes. Cache timing/performance claims still require repeated measured runs.
+Unsupported dimensions stay visible instead of gaining fabricated cross-runtime
+parity. RE-029 records the tokenizer limitation.
+
+**Reopen if:** wllama restores a bounded standalone tokenizer surface, cache semantics
+become explicitly controllable beyond longest-prefix reuse, or stable Prompt API pages
+gain standardized sampling/token evidence.
+
+## D-043: Persisted conversations are portable records, not live runtime sessions  (2026-07-19, status: accepted)
+
+**Decision:** IndexedDB `webai-v1` version 4 adds a `chats` store. A schema-versioned
+conversation records the content-identified model target and source provenance,
+runtime/adapter/engine identity, requested and effective wllama session configuration,
+system prompt, generation defaults, ordered visible messages, per-response request and
+control outcomes, execution-provenance snapshot, channels, warnings/failures, token
+evidence, and metrics. It never
+stores a session handle, AbortSignal, worker, browser-owned object, or KV state.
+
+The store admits at most 256 conversations. A conversation/import is at most 8 MiB,
+with at most 4,096 messages, 256 Ki characters per message, a 64 Ki-character system
+prompt, 64 channels per response, and the existing diagnostic/token bounds. Imports
+construct fresh validated records, reject unknown versions/non-finite data/duplicate
+message IDs, assign a fresh conversation and message IDs, render content only as text,
+and never load a model or run a prompt. JSON is the canonical lossless envelope.
+Markdown remains readable while carrying that same canonical JSON in a collision-safe
+`webai-chat-v1` fenced payload, so both formats round-trip.
+
+Idle changes are coalesced behind a 350 ms autosave delay before bounded validation,
+serialization, and IndexedDB work. History enumeration validates bounded summary
+fields one record at a time, skips malformed/future records, and reports the skipped
+count without hiding valid conversations. Generated response text is normalized before it enters the
+canonical record: null characters become U+FFFD, and response/channel content beyond
+the 256 Ki-character per-response budget is truncated with a persisted visible
+warning. The 8 MiB aggregate record bound remains a visible save boundary.
+
+The same initial schema optionally carries a self-contained manual replay seed: source
+identity/title/capture time/system prompt, bounded original user/assistant turns, and
+stable source-turn associations on the new active messages. Creating a seed explicitly
+saves the source, creates a new conversation with the same configuration and no active
+messages or live session, and waits for the user to send each source prompt. Original
+answers remain reference-only and render beside the associated new answers. Snapshotting
+instead of linking keeps comparison evidence intact if the source is later renamed,
+deleted, exported, or imported; import freshens seed message/turn IDs and rewrites the
+active associations. Before sending, the comparison exposes a separate editable prompt
+initialized from the immutable source prompt. The association identifies which source
+turn inspired the adapted prompt; both texts stay visible so a diverged branch is not
+mislabelled as an exact replay. Sent replay prompts remain fixed in the active transcript,
+while unsent prompts and ordinary unassociated turns retain their respective draft and
+linear edit-and-resend behavior.
+
+Restored wllama chats replay their canonical transcript. Prompt API sessions are
+rebuilt with the system prompt and retained completed prefix in `initialPrompts`, then
+send the target user turn once when no context overflow has occurred. Because Chrome
+does not expose which ordinary pairs it evicted and never evicts `initialPrompts`, an
+overflowed Prompt transcript stays readable but reload/edit/regenerate replay is
+blocked rather than constructing different hidden state (RE-030). Regenerate replaces the latest assistant attempt using
+its saved request controls by default. Edit-and-resend is an explicit linear branch:
+it replaces the selected user turn and, after confirmation when needed, removes later
+visible turns. Imported or missing targets remain readable until the user explicitly
+selects and loads a compatible local target.
+
+After any aborted or failed Prompt generation, the browser-owned session is destroyed
+and must be rebuilt from the canonical transcript. The current draft performs prefill
+before generation but does not define a reusable rollback boundary for interruption;
+WebAI therefore does not continue against potentially divergent hidden state (RE-031).
+
+**Context:** M6 makes visible history diverge from ephemeral runtime state unless the
+controller owns restoration. Chrome's official Prompt API documentation, updated
+2026-05-19 and checked 2026-07-19, specifically documents `initialPrompts` for system
+prompts and stored-session resumption. Controlled Chrome coverage proves reload
+persistence, no automatic execution, Prompt prefix reconstruction before overflow, wllama
+edit/regenerate truncation, arbitrary-order manual replay without hidden source-answer
+injection, and additive database storage; hostile/future/oversize
+interchange fixtures fail closed.
+[Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api).
+
+**Consequences:** Conversation data survives page reloads and is portable without
+pretending a multi-gigabyte model or hidden browser session was serialized. Persistence
+failure leaves the current in-memory conversation visible and reports the failure.
+Linear branching keeps the active testing transcript simple; old downstream turns are
+not silently retained as if they still belonged to the edited context.
+
+**Reopen if:** testing needs a durable attempt tree rather than one active linear
+branch, conversation size requires OPFS instead of bounded IndexedDB records, or a
+standard portable chat format can preserve WebAI's provenance/control/measurement
+semantics.
+
 ## D-042: Hugging Face acquisition is anonymous and public-only  (2026-07-19, status: accepted)
 
 **Decision:** WebAI searches, inspects, resolves, and downloads only Hugging Face

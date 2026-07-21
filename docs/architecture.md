@@ -165,12 +165,14 @@ The broader controller grows variant facets as their first real consumers land:
 7. adapter `inventory()` facets — report native-cache entries, byte counts and confidence, source
    identities, and eviction/missing state where the adapter can observe them.
 
-M3/M4 Chat has one active in-memory session and request, so its direct adapter path
-uses the request's `AbortSignal` and lifecycle generation rather than fabricating
-opaque handles or worker protocol sequence numbers. M6 history/regeneration and M8
-benchmark concurrency must add the controller facade, handles, request IDs, completion
-events, and requested/effective control records before they create multiple concurrent
-consumers. Worker messages use a discriminated, schema-validated protocol carrying a protocol
+M6 replaces M3/M4's direct single-request adapter path with the controller facade.
+Each creation returns an opaque adapter-scoped session handle plus requested/effective
+session data. Each generation receives a request ID, monotonically sequenced envelopes,
+and an explicit completion event with requested/effective/unverifiable control records.
+The controller drops events whose request no longer owns the handle and translates an
+aborted request to a stopped outcome even when a platform stream races with another
+native error. Chat currently retains one active handle, while the same facade is ready
+for M8's multiple consumers. Worker messages use a discriminated, schema-validated protocol carrying a protocol
 version, adapter ID, session ID, request ID, and sequence number. Unknown message
 variants fail closed with a diagnostic. Errors cross the boundary as typed error data
 (`code`, safe message, retryability, phase, optional cause code), never as trusted HTML
@@ -323,7 +325,8 @@ manager” does not falsely imply that every runtime lets WebAI own every byte.
 - **IndexedDB `webai-v1`** holds small structured state: model/artifact manifests,
   source/ref metadata, download jobs and checkpoints, native-cache inventory,
   settings, chats, benchmark specs/results, and schema migrations. Version 3 removes
-  the retired Hugging Face credential store (D-042).
+  the retired Hugging Face credential store (D-042); version 4 additively creates the
+  bounded `chats` store without changing model/OPFS records (D-043).
 - **Cache Storage/runtime databases** are used only where an adapter's supported
   integration requires native caching. They remain adapter-owned data planes but are
   indexed in WebAI's manifest when enumerable.
@@ -354,7 +357,11 @@ core records separate:
   versions, verdicts, explanations, and inspection time;
 - `NativeCacheEntry`: adapter/version, logical source identity, native key/location
   when observable, reported bytes, measurement confidence, last reconciliation, and
-  guarantees demonstrated; and
+  guarantees demonstrated;
+- `ChatConversation`: bounded portable target/runtime/session provenance, system and
+  generation configuration, the active linear transcript, per-response execution
+  provenance/evidence and
+  request/control outcomes—never ephemeral handles or KV/browser session state; and
 - `AcquisitionJob`: source identity, durable output stage, expected and durable source
   offsets, transformation checkpoint, progress, and typed error state.
 
@@ -714,6 +721,51 @@ Chat content, templates, parameters, adapter extensions, model-target identity w
 variant-specific provenance, requested/effective backend, and per-response metrics are
 stored together. This makes a saved conversation reproducible to the extent the
 selected adapter itself permits; unsupported controls remain recorded as unsupported.
+
+### Conversation state and replay
+
+The schema-versioned canonical conversation is independent of its ephemeral runtime
+session. IndexedDB writes are bounded, serialized, and coalesced after idle changes;
+a save failure is visible but does not erase the in-memory transcript. Malformed
+history records are skipped with a visible count so valid records remain reachable.
+JSON is the lossless import/export envelope.
+Markdown contains the same validated envelope in a `webai-chat-v1` fenced payload plus
+a readable transcript. Import assigns fresh local IDs, performs no network/model work,
+and validates aggregate, string, array, numeric, role, runtime, and version bounds
+before one record reaches application state (D-043).
+
+A saved conversation can also seed a new manual replay. The new record snapshots the
+source system prompt and user/assistant turns, starts with an empty active transcript,
+and associates only explicitly re-sent or user-adapted prompts and their new responses
+with stable source-turn IDs. Each comparison keeps the immutable original prompt beside
+the editable prompt-to-send, so the new branch can be steered as its responses diverge.
+The snapshot is part of the bounded canonical record rather than an
+IndexedDB-only link, so original/new comparisons survive source deletion, reload, and
+JSON/Markdown transfer. Source answers are display-only evidence: neither they nor
+unselected prompts enter the new runtime context.
+
+wllama reconstructs context by sending the canonical system/user/assistant sequence.
+Prompt API creation supplies the system and already-completed sequence through
+`initialPrompts`; ordinary turns then send only the newest user input into Chrome's
+stateful session. Regenerate or edit-and-resend first creates a fresh Prompt session
+from the accepted prefix so removed visible turns cannot survive in hidden browser
+state. After `contextoverflow`, Chrome does not expose the exact retained suffix and
+will not evict `initialPrompts`; the transcript therefore stays readable but replay is
+blocked with an explicit explanation (RE-030). Editing an earlier user turn is a confirmed linear truncation. Regenerate
+reuses the prior assistant request snapshot by default.
+
+Prompt abort/failure also destroys the browser-owned session before another turn. The
+canonical failed/partial response remains visible, while continuation requires a fresh
+session reconstructed from accepted visible messages (RE-031). Generated output is
+normalized and bounded before entering that record; normalization/truncation remains
+visible as persisted response warnings.
+
+wllama requests native longest-prefix reuse with `cache_prompt` and records valid
+`cache_n` hits separately from full/evaluated prompt counts. Prompt API's retained
+conversation is browser-managed state, not an app-observable KV cache. No cache state
+is serialized. The response tokenizer inspector is likewise evidence-scoped: bounded
+wllama sampled output IDs/pieces are exact runtime records; standalone input
+tokenization and Prompt API token identities remain unavailable (D-044, RE-029).
 
 ## Benchmark harness and measurement semantics
 

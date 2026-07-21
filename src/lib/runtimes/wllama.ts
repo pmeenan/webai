@@ -1,6 +1,6 @@
 import { getStoredFile } from "../models/storage";
 import type { InstalledModelRecord, ModelFailure } from "../models/types";
-import { ModelOperationError } from "../models/types";
+import { maximumDeclaredContextTokens, ModelOperationError } from "../models/types";
 import { ChannelStreamParser } from "./channel-parser";
 import type {
   GenerationEvent,
@@ -8,6 +8,7 @@ import type {
   RuntimeAdapter,
   RuntimeDescriptor,
   RuntimeLoadEvent,
+  RuntimeMessage,
   WllamaBackend,
   WllamaRuntimeDescriptor,
   WllamaRuntimeSession,
@@ -17,7 +18,16 @@ import { isWllamaMtpCompanion, wllamaModelCompatibility } from "./wllama-compati
 
 const channelUpdateIntervalMs = 16;
 const maximumUnrecognizedSpecialTokens = 32;
+const maximumInspectedOutputTokens = 512;
+const maximumInspectedTokenTextLength = 256;
 const knownChannelTokens = new Set(["<channel|>", "<|channel>", "<|channel|>", "<|message|>"]);
+
+export const wllamaGenerationDefaults = Object.freeze({
+  temperature: 0.7,
+  topP: 0.95,
+  topK: 40,
+  repeatPenalty: 1.1,
+}) satisfies Required<Pick<GenerationOptions, "temperature" | "topP" | "topK" | "repeatPenalty">>;
 
 interface ChatCompletionLogprob {
   readonly id?: unknown;
@@ -34,8 +44,11 @@ interface ChatCompletionChunk {
   readonly usage?: {
     readonly prompt_tokens: number;
     readonly completion_tokens: number;
+    readonly total_tokens?: number;
+    readonly prompt_tokens_details?: { readonly cached_tokens?: number };
   } | null;
   readonly timings?: {
+    readonly cache_n: number;
     readonly prompt_n: number;
     readonly prompt_per_second: number;
     readonly predicted_n: number;
@@ -61,7 +74,7 @@ interface WllamaInstance {
   ): Promise<void>;
   createChatCompletion(parameters: {
     readonly messages: readonly {
-      readonly role: "user" | "assistant";
+      readonly role: "system" | "user" | "assistant";
       readonly content: string;
     }[];
     readonly stream: true;
@@ -73,6 +86,9 @@ interface WllamaInstance {
     readonly temperature: number;
     readonly top_k: number;
     readonly top_p: number;
+    readonly penalty_repeat: number;
+    readonly seed?: number;
+    readonly cache_prompt: true;
     readonly chat_template_kwargs?: { readonly enable_thinking: boolean };
     readonly abortSignal: AbortSignal;
   }): Promise<AsyncIterable<ChatCompletionChunk>>;
@@ -125,6 +141,26 @@ export const wllamaDescriptor: WllamaRuntimeDescriptor = {
   engineVersion: "wllama 3.5.1 / llama.cpp b9640-dd4623a",
   acquisitionOwnership: "app-file",
   executionContext: "adapter-owned-library-worker",
+  generationControls: {
+    systemPrompt: true,
+    temperature: true,
+    topP: true,
+    topK: true,
+    maxTokens: true,
+    repeatPenalty: true,
+    seed: true,
+  },
+  contextCaching: {
+    supported: true,
+    kind: "runtime-prefix-kv",
+    explanation:
+      "wllama asks llama.cpp to reuse the longest matching prompt prefix and reports the number of cached tokens for each response.",
+  },
+  tokenizerInspection: {
+    kind: "sampled-output",
+    explanation:
+      "wllama exposes sampled output token IDs and pieces through logprobs. Its browser wrapper does not expose standalone prompt tokenization.",
+  },
   mtp: {
     verdict: "unsupported",
     reasonCode: "companion-mount-not-exposed",
@@ -154,8 +190,59 @@ function supportsMemory64(): boolean {
   }
 }
 
-function boundedRuntimeInteger(value: number, minimum: number, fallback: number): number {
-  return Number.isFinite(value) ? Math.max(minimum, Math.floor(value)) : fallback;
+function boundedRuntimeInteger(
+  value: number,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number {
+  return Number.isFinite(value)
+    ? Math.min(maximum, Math.max(minimum, Math.floor(value)))
+    : fallback;
+}
+
+function nonNegativeFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function normalizedGenerationOptions(
+  options: GenerationOptions,
+): Required<Pick<GenerationOptions, "temperature" | "topP" | "topK" | "repeatPenalty">> &
+  Pick<GenerationOptions, "maxTokens" | "seed" | "thinking"> {
+  const temperature = options.temperature ?? wllamaGenerationDefaults.temperature;
+  const topP = options.topP ?? wllamaGenerationDefaults.topP;
+  const topK = options.topK ?? wllamaGenerationDefaults.topK;
+  const repeatPenalty = options.repeatPenalty ?? wllamaGenerationDefaults.repeatPenalty;
+  const maxTokens = options.maxTokens;
+  const seed = options.seed;
+  if (
+    !Number.isFinite(temperature) ||
+    temperature < 0 ||
+    temperature > 2 ||
+    !Number.isFinite(topP) ||
+    topP < 0 ||
+    topP > 1 ||
+    !Number.isSafeInteger(topK) ||
+    topK < 0 ||
+    topK > 10_000 ||
+    !Number.isFinite(repeatPenalty) ||
+    repeatPenalty < 0 ||
+    repeatPenalty > 2 ||
+    (maxTokens !== undefined &&
+      (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 1_048_576)) ||
+    (seed !== undefined && (!Number.isSafeInteger(seed) || seed < 0 || seed > 4_294_967_294))
+  ) {
+    throw failure("generate", "One or more generation controls are outside their supported range.");
+  }
+  return {
+    temperature,
+    topP,
+    topK,
+    repeatPenalty,
+    ...(maxTokens === undefined ? {} : { maxTokens }),
+    ...(seed === undefined ? {} : { seed }),
+    ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
+  };
 }
 
 async function loadableFiles(
@@ -257,9 +344,17 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
     if (lifecycle !== this.#lifecycle) {
       throw failure("load", "Model loading was stopped.", "aborted", true);
     }
-    const threads = isolated ? boundedRuntimeInteger(requested.threads, 1, 1) : 1;
-    const gpuLayers = webgpuAvailable ? boundedRuntimeInteger(requested.gpuLayers, 0, 0) : 0;
-    const contextSize = boundedRuntimeInteger(requested.contextSize, 256, 2_048);
+    const hardwareThreads = Math.max(1, navigator.hardwareConcurrency || 1);
+    const threads = isolated ? boundedRuntimeInteger(requested.threads, 1, hardwareThreads, 1) : 1;
+    const gpuLayers = webgpuAvailable
+      ? boundedRuntimeInteger(requested.gpuLayers, 0, 10_000, 0)
+      : 0;
+    const contextSize = boundedRuntimeInteger(
+      requested.contextSize,
+      256,
+      maximumDeclaredContextTokens,
+      2_048,
+    );
     const runtime = new assets.Constructor(
       { default: wllamaRuntimeAssets.defaultWasm },
       {
@@ -321,7 +416,7 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
   }
 
   async generate(
-    messages: readonly { readonly role: "user" | "assistant"; readonly content: string }[],
+    messages: readonly RuntimeMessage[],
     options: GenerationOptions,
     signal: AbortSignal,
     onEvent: (event: GenerationEvent) => void,
@@ -331,6 +426,7 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
     if (runtime === undefined || session === undefined) {
       throw failure("generate", "Load a model before starting a chat.");
     }
+    const normalized = normalizedGenerationOptions(options);
     const started = performance.now();
     let firstTokenAt: number | undefined;
     let usage: ChatCompletionChunk["usage"];
@@ -354,6 +450,8 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
       }
     >();
     let omittedDiagnosticOccurrences = 0;
+    const sampledTokens: { id: number; text: string }[] = [];
+    let omittedSampledTokens = 0;
     let diagnosticsDirty = false;
     let lastChannelUpdateAt = started;
     let rejectStopped: ((reason: DOMException) => void) | undefined;
@@ -405,6 +503,14 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
       for (const entry of entries) {
         if (typeof entry.id !== "number" || !Number.isSafeInteger(entry.id) || entry.id < 0)
           continue;
+        if (typeof entry.token === "string") {
+          if (
+            entry.token.length <= maximumInspectedTokenTextLength &&
+            sampledTokens.length < maximumInspectedOutputTokens
+          ) {
+            sampledTokens.push({ id: entry.id, text: entry.token });
+          } else omittedSampledTokens += 1;
+        }
         const declared = declaredSpecialTokens.get(entry.id);
         if (
           declared === undefined ||
@@ -441,13 +547,16 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
           timings_per_token: true,
           logprobs: true,
           top_logprobs: 1,
-          max_tokens: -1,
-          temperature: 0.7,
-          top_k: 40,
-          top_p: 0.95,
-          ...(options.thinking === undefined
+          max_tokens: normalized.maxTokens ?? -1,
+          temperature: normalized.temperature,
+          top_k: normalized.topK,
+          top_p: normalized.topP,
+          penalty_repeat: normalized.repeatPenalty,
+          ...(normalized.seed === undefined ? {} : { seed: normalized.seed }),
+          cache_prompt: true,
+          ...(normalized.thinking === undefined
             ? {}
-            : { chat_template_kwargs: { enable_thinking: options.thinking } }),
+            : { chat_template_kwargs: { enable_thinking: normalized.thinking } }),
           abortSignal: signal,
         });
         for await (const chunk of stream) {
@@ -483,9 +592,25 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
     }
     emitPending();
     onEvent({ type: "channels", channels: channelParser.finish() });
+    onEvent({
+      type: "tokenization",
+      tokenization: {
+        method: "wllama-sampled-logprobs",
+        tokens: sampledTokens,
+        omittedTokens: omittedSampledTokens,
+      },
+    });
     const completed = performance.now();
-    const promptTokens = usage?.prompt_tokens ?? timings?.prompt_n;
-    const completionTokens = usage?.completion_tokens ?? timings?.predicted_n;
+    const promptTokens = nonNegativeFinite(usage?.prompt_tokens)
+      ? usage.prompt_tokens
+      : nonNegativeFinite(timings?.prompt_n)
+        ? timings.prompt_n
+        : undefined;
+    const completionTokens = nonNegativeFinite(usage?.completion_tokens)
+      ? usage.completion_tokens
+      : nonNegativeFinite(timings?.predicted_n)
+        ? timings.predicted_n
+        : undefined;
     onEvent({
       type: "metrics",
       metrics: {
@@ -493,13 +618,27 @@ export class WllamaRuntimeAdapter implements RuntimeAdapter {
         ...(firstTokenAt === undefined ? {} : { timeToFirstTokenMs: firstTokenAt - started }),
         ...(promptTokens === undefined ? {} : { promptTokens }),
         ...(completionTokens === undefined ? {} : { completionTokens }),
-        ...(timings?.prompt_per_second === undefined
+        ...(nonNegativeFinite(usage?.prompt_tokens_details?.cached_tokens)
+          ? { cachedPromptTokens: usage.prompt_tokens_details.cached_tokens }
+          : nonNegativeFinite(timings?.cache_n)
+            ? { cachedPromptTokens: timings.cache_n }
+            : {}),
+        ...(nonNegativeFinite(timings?.prompt_n)
+          ? { evaluatedPromptTokens: timings.prompt_n }
+          : {}),
+        ...(!nonNegativeFinite(timings?.prompt_per_second)
           ? {}
           : { prefillTokensPerSecond: timings.prompt_per_second }),
-        ...(timings?.predicted_per_second === undefined
+        ...(!nonNegativeFinite(timings?.predicted_per_second)
           ? {}
           : { decodeTokensPerSecond: timings.predicted_per_second }),
         totalTimeMs: completed - started,
+        ...(nonNegativeFinite(usage?.total_tokens)
+          ? { contextUsage: usage.total_tokens }
+          : promptTokens !== undefined && completionTokens !== undefined
+            ? { contextUsage: promptTokens + completionTokens }
+            : {}),
+        contextWindow: session.backend.contextSize,
       },
     });
   }

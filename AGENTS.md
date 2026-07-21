@@ -117,10 +117,10 @@ here, the tech-lead and reviewer operating models, and the human commit gate.
 
 ## Current status
 
-**M0, M1, M2, M4, and M5 are complete; M3 is implemented locally and awaiting its
-live >2 GB wllama exit check.**
+**M0, M1, M2, M4, M5, and M6 are complete; M3 is implemented locally and awaiting
+its live >2 GB wllama exit check.**
 Verified acquisition, progressive model discovery, the OPFS model manager, bounded
-GGUF splitting, the measured wllama path, and a browser-verified Gemini Nano adapter
-are available; see
+GGUF splitting, the measured wllama path, a browser-verified Gemini Nano adapter, and
+persisted reproducible chat testing are available; see
 [docs/plan.md](docs/plan.md). Keep this paragraph current when plan.md milestone
 status changes (rule 5).

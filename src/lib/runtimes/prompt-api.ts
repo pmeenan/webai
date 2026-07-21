@@ -14,6 +14,7 @@ import type {
   PromptApiRuntimeSession,
   RuntimeAdapter,
   RuntimeLoadEvent,
+  RuntimeMessage,
 } from "./types";
 
 export type { PromptApiAvailability } from "../prompt-api-surface";
@@ -58,6 +59,7 @@ interface LanguageModelCreateOptions {
   ];
   readonly signal: AbortSignal;
   readonly monitor: (monitor: LanguageModelCreateMonitor) => void;
+  readonly initialPrompts?: readonly RuntimeMessage[];
 }
 
 interface LanguageModelFactorySurface {
@@ -78,6 +80,26 @@ export const promptApiDescriptor: PromptApiRuntimeDescriptor = {
   engineVersion: "Browser-managed Gemini Nano",
   acquisitionOwnership: "browser-managed",
   executionContext: "browser-managed-main-thread",
+  generationControls: {
+    systemPrompt: true,
+    temperature: false,
+    topP: false,
+    topK: false,
+    maxTokens: false,
+    repeatPenalty: false,
+    seed: false,
+  },
+  contextCaching: {
+    supported: true,
+    kind: "browser-managed-state",
+    explanation:
+      "Chrome retains conversation state inside the browser-managed session. It exposes context usage, not KV-cache mechanics or cached-token counts.",
+  },
+  tokenizerInspection: {
+    kind: "context-usage-only",
+    explanation:
+      "The Prompt API deliberately hides model tokenization. Chrome exposes implementation-defined context usage and window values only.",
+  },
 };
 
 function failure(
@@ -316,6 +338,7 @@ export class PromptApiRuntimeAdapter implements RuntimeAdapter {
   }
 
   async createSession(
+    initialPrompts: readonly RuntimeMessage[] = [],
     onProgress?: (event: RuntimeLoadEvent) => void,
   ): Promise<PromptApiRuntimeSession> {
     // Keep create() in the synchronous part of the user-click call stack. Starting a
@@ -348,6 +371,7 @@ export class PromptApiRuntimeAdapter implements RuntimeAdapter {
     try {
       const creation = factory.create({
         ...promptApiTextOptions,
+        ...(initialPrompts.length === 0 ? {} : { initialPrompts }),
         signal: controller.signal,
         monitor: (monitor) => {
           monitor.addEventListener("downloadprogress", (event) => {
@@ -398,7 +422,7 @@ export class PromptApiRuntimeAdapter implements RuntimeAdapter {
   }
 
   async generate(
-    messages: readonly { readonly role: "user" | "assistant"; readonly content: string }[],
+    messages: readonly RuntimeMessage[],
     options: GenerationOptions,
     signal: AbortSignal,
     onEvent: (event: GenerationEvent) => void,
@@ -409,10 +433,10 @@ export class PromptApiRuntimeAdapter implements RuntimeAdapter {
     if (runtime === undefined || session === undefined || latestUserMessage === undefined) {
       throw failure("generate", "Load Gemini Nano before starting a chat.");
     }
-    if (options.thinking !== undefined) {
+    if (Object.values(options).some((value) => value !== undefined)) {
       throw failure(
         "generate",
-        "Chrome's Prompt API does not expose a thinking control. Use its runtime default.",
+        "Chrome's stable Prompt API does not expose these generation controls. Use its browser-managed defaults.",
         "unsupported",
       );
     }

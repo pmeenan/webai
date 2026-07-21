@@ -661,7 +661,9 @@ test("upgrades the version-one model database without losing existing records", 
             request.addEventListener("error", () => reject(request.error), { once: true });
           });
           const ready =
-            database.version === 3 && !database.objectStoreNames.contains("credentials");
+            database.version === 4 &&
+            database.objectStoreNames.contains("chats") &&
+            !database.objectStoreNames.contains("credentials");
           database.close();
           return ready;
         }),
@@ -687,8 +689,8 @@ test("upgrades the version-one model database without losing existing records", 
     };
   });
   expect(migrated).toEqual({
-    version: 3,
-    stores: ["blobs", "jobs", "models"],
+    version: 4,
+    stores: ["blobs", "chats", "jobs", "models"],
     hasLegacyRecord: true,
   });
 });
@@ -731,7 +733,9 @@ test("purges the retired Hugging Face credential store during the version-three 
             request.addEventListener("error", () => reject(request.error), { once: true });
           });
           const migrated =
-            database.version === 3 && !database.objectStoreNames.contains("credentials");
+            database.version === 4 &&
+            database.objectStoreNames.contains("chats") &&
+            !database.objectStoreNames.contains("credentials");
           database.close();
           return migrated;
         }),

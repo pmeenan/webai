@@ -304,6 +304,11 @@ test("downloads and chats with browser-managed Gemini Nano on the shared surface
     ),
   ).toEqual(["First question", "Second question", "Empty response"]);
 
+  await page.getByRole("button", { name: "Regenerate" }).click();
+  await expect(
+    page.getByText("Start a new conversation before continuing with Gemini Nano."),
+  ).toBeVisible();
+
   await page.getByLabel("wllama · managed GGUF").check();
   expect(
     await page.evaluate(
@@ -312,6 +317,175 @@ test("downloads and chats with browser-managed Gemini Nano on the shared surface
           .__webaiPromptDestroyCalls,
     ),
   ).toBe(1);
+  await promptRuntime.check();
+  await page.getByRole("button", { name: "Load Gemini Nano" }).click();
+  await expect(
+    page.getByText(
+      "This overflowed Gemini Nano transcript remains readable but cannot be replayed.",
+    ),
+  ).toBeVisible();
+});
+
+test("rebuilds Prompt API state from initial prompts before regeneration", async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = globalThis as typeof globalThis & {
+      __webaiPromptCreates?: unknown[];
+      __webaiPromptInputs?: string[];
+    };
+    state.__webaiPromptCreates = [];
+    state.__webaiPromptInputs = [];
+    Object.defineProperty(globalThis, "LanguageModel", {
+      configurable: true,
+      value: {
+        availability: async () => "available",
+        create(options: { initialPrompts?: unknown[] }) {
+          state.__webaiPromptCreates?.push(options.initialPrompts ?? []);
+          const session = Object.assign(new EventTarget(), {
+            contextUsage: 0,
+            contextWindow: 4096,
+            promptStreaming(input: string) {
+              state.__webaiPromptInputs?.push(input);
+              session.contextUsage += 5;
+              return new ReadableStream<string>({
+                start(controller) {
+                  controller.enqueue(`Nano ${state.__webaiPromptInputs?.length ?? 0}`);
+                  controller.close();
+                },
+              });
+            },
+            destroy() {},
+          });
+          return Promise.resolve(session);
+        },
+      },
+    });
+  });
+
+  await page.goto("./chat/");
+  await page.getByLabel("Chrome Prompt API · Gemini Nano").check();
+  await page.getByLabel("System prompt").fill("Be exact.");
+  await page.getByRole("button", { name: "Load Gemini Nano" }).click();
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  await page.getByLabel("Message").fill("Question");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".chat-message-assistant")).toContainText("Nano 1");
+  await page.getByRole("button", { name: "Regenerate" }).click();
+  await expect(page.locator(".chat-message-assistant")).toContainText("Nano 2");
+
+  expect(
+    await page.evaluate(() => ({
+      creates: (globalThis as typeof globalThis & { __webaiPromptCreates?: unknown[] })
+        .__webaiPromptCreates,
+      inputs: (globalThis as typeof globalThis & { __webaiPromptInputs?: string[] })
+        .__webaiPromptInputs,
+    })),
+  ).toEqual({
+    creates: [
+      [{ role: "system", content: "Be exact." }],
+      [{ role: "system", content: "Be exact." }],
+    ],
+    inputs: ["Question", "Question"],
+  });
+});
+
+test("seeds a manual replay and persists side-by-side response comparisons", async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = globalThis as typeof globalThis & {
+      __webaiReplayCreates?: unknown[][];
+      __webaiReplayInputs?: string[];
+    };
+    state.__webaiReplayCreates = [];
+    state.__webaiReplayInputs = [];
+    Object.defineProperty(globalThis, "LanguageModel", {
+      configurable: true,
+      value: {
+        availability: async () => "available",
+        create(options: { initialPrompts?: unknown[] }) {
+          state.__webaiReplayCreates?.push(options.initialPrompts ?? []);
+          const session = Object.assign(new EventTarget(), {
+            contextUsage: 0,
+            contextWindow: 4096,
+            promptStreaming(input: string) {
+              state.__webaiReplayInputs?.push(input);
+              const responseNumber = state.__webaiReplayInputs?.length ?? 0;
+              session.contextUsage += 5;
+              return new ReadableStream<string>({
+                start(controller) {
+                  controller.enqueue(`Measured reply ${responseNumber}`);
+                  controller.close();
+                },
+              });
+            },
+            destroy() {},
+          });
+          return Promise.resolve(session);
+        },
+      },
+    });
+  });
+
+  await page.goto("./chat/");
+  await page.getByLabel("Chrome Prompt API · Gemini Nano").check();
+  await page.getByLabel("Conversation name").fill("Replay source");
+  await page.getByLabel("System prompt").fill("Keep the comparison exact.");
+  await page.getByRole("button", { name: "Load Gemini Nano" }).click();
+  await page.getByLabel("Message").fill("First source prompt");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".chat-message-assistant").last()).toContainText("Measured reply 1");
+  await page.getByLabel("Message").fill("Second source prompt");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".chat-message-assistant").last()).toContainText("Measured reply 2");
+
+  await page.getByRole("button", { name: "Manual replay" }).click();
+  await expect(page.getByRole("heading", { name: "Compare with “Replay source”" })).toBeVisible();
+  await expect(page.getByLabel("System prompt")).toHaveValue("Keep the comparison exact.");
+  await expect(page.locator(".chat-message")).toHaveCount(0);
+  await expect(page.getByLabel("Prompt 2 to send")).toHaveValue("Second source prompt");
+  await page.getByLabel("Prompt 2 to send").fill("Adapted second prompt");
+  await expect(page.getByRole("button", { name: "Send source prompt 2" })).toBeDisabled();
+
+  await page.getByRole("button", { name: "Load Gemini Nano" }).click();
+  await page.getByRole("button", { name: "Send source prompt 2" }).click();
+  const secondComparison = page.locator(".replay-turn").nth(1);
+  await expect(secondComparison.locator(".replay-response-grid article").nth(0)).toContainText(
+    "Measured reply 2",
+  );
+  await expect(secondComparison.locator(".replay-response-grid article").nth(1)).toContainText(
+    "Measured reply 3",
+  );
+  await expect(
+    page.locator(".replay-turn").first().locator(".replay-response-grid article").nth(1),
+  ).toContainText("Not sent yet.");
+  await expect(secondComparison.locator(".replay-prompt-grid").locator("article")).toContainText(
+    "Second source prompt",
+  );
+  await expect(page.locator(".chat-message-user")).toContainText("Adapted second prompt");
+  await expect(page.getByRole("button", { name: /Edit user turn/ })).toHaveCount(0);
+
+  expect(
+    await page.evaluate(() => ({
+      creates: (globalThis as typeof globalThis & { __webaiReplayCreates?: unknown[][] })
+        .__webaiReplayCreates,
+      inputs: (globalThis as typeof globalThis & { __webaiReplayInputs?: string[] })
+        .__webaiReplayInputs,
+    })),
+  ).toEqual({
+    creates: [
+      [{ role: "system", content: "Keep the comparison exact." }],
+      [{ role: "system", content: "Keep the comparison exact." }],
+    ],
+    inputs: ["First source prompt", "Second source prompt", "Adapted second prompt"],
+  });
+
+  await expect(page.getByText(/Saved locally in this browser/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Compare with “Replay source”" })).toBeVisible();
+  await expect(
+    page.locator(".replay-turn").nth(1).locator(".replay-response-grid article").nth(1),
+  ).toContainText("Measured reply 3");
+  await expect(page.getByLabel("Prompt 2 to send")).toHaveValue("Adapted second prompt");
+  await expect(page.getByLabel("Prompt 2 to send")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Source prompt 2 sent" })).toBeDisabled();
 });
 
 test("shows reacquisition progress and stops a pending browser-managed session load", async ({
@@ -423,6 +597,9 @@ test("keeps an explicit stopped state when Gemini Nano is aborted before output"
     page.getByText("Generation stopped before the runtime returned text."),
   ).toBeVisible();
   await expect(page.getByText("Stopped response.", { exact: true })).toBeVisible();
+  await expect(page.getByText("No session", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Message")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Load Gemini Nano" })).toBeEnabled();
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
@@ -534,7 +711,22 @@ test("refreshes pre-diagnostic tokenizer metadata before loading an existing mod
     ),
   ).toBe(8192);
 
+  await expect(page.getByText("Saved locally in this browser.")).toBeVisible();
   await stripChatFixtureInspection(page);
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("webai-v1");
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const transaction = database.transaction("chats", "readwrite");
+    transaction.objectStore("chats").clear();
+    await new Promise<void>((resolve, reject) => {
+      transaction.addEventListener("complete", () => resolve(), { once: true });
+      transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    });
+    database.close();
+  });
   await page.evaluate(() => {
     delete (
       globalThis as typeof globalThis & {
@@ -737,6 +929,7 @@ test("streams reasoning-capable output and keeps response metrics compact", asyn
               choices: [],
               usage: { prompt_tokens: 12, completion_tokens: 4 },
               timings: {
+                cache_n: 6,
                 prompt_n: 12,
                 prompt_per_second: 24,
                 predicted_n: 4,
@@ -789,6 +982,10 @@ test("streams reasoning-capable output and keeps response metrics compact", asyn
   await expect(thinking).toHaveAttribute("open", "");
   const metrics = response.locator(".response-metrics");
   await expect(metrics).toContainText("12 in · 4 out");
+  await expect(metrics).toContainText("6 tokens");
+  await expect(response.locator("details.response-token-inspector").last()).toContainText(
+    "Tokenizer inspector",
+  );
   await expect(metrics).not.toContainText("Not observed");
   expect(await metrics.evaluate((element) => getComputedStyle(element).display)).toBe("flex");
   expect(
@@ -810,7 +1007,14 @@ test("streams reasoning-capable output and keeps response metrics compact", asyn
         };
         __webaiLoadedFileNames?: string[];
         __webaiCompletionParameters?: {
+          messages?: Array<{ role?: string; content?: string }>;
           max_tokens?: number;
+          temperature?: number;
+          top_k?: number;
+          top_p?: number;
+          penalty_repeat?: number;
+          seed?: number;
+          cache_prompt?: boolean;
           logprobs?: boolean;
           top_logprobs?: number;
           chat_template_kwargs?: { enable_thinking?: boolean };
@@ -821,6 +1025,13 @@ test("streams reasoning-capable output and keeps response metrics compact", asyn
         contextShift: state.__webaiLoadParameters?.ctx_shift,
         contextTokens: state.__webaiLoadParameters?.n_ctx,
         maxTokens: state.__webaiCompletionParameters?.max_tokens,
+        temperature: state.__webaiCompletionParameters?.temperature,
+        topK: state.__webaiCompletionParameters?.top_k,
+        topP: state.__webaiCompletionParameters?.top_p,
+        repeatPenalty: state.__webaiCompletionParameters?.penalty_repeat,
+        seed: state.__webaiCompletionParameters?.seed,
+        cachePrompt: state.__webaiCompletionParameters?.cache_prompt,
+        firstMessage: state.__webaiCompletionParameters?.messages?.[0],
         logprobs: state.__webaiCompletionParameters?.logprobs,
         topLogprobs: state.__webaiCompletionParameters?.top_logprobs,
         thinking: state.__webaiCompletionParameters?.chat_template_kwargs?.enable_thinking,
@@ -832,6 +1043,13 @@ test("streams reasoning-capable output and keeps response metrics compact", asyn
     contextShift: false,
     contextTokens: 8192,
     maxTokens: -1,
+    temperature: 0.7,
+    topK: 40,
+    topP: 0.95,
+    repeatPenalty: 1.1,
+    seed: 42,
+    cachePrompt: true,
+    firstMessage: { role: "system", content: "You are a helpful assistant." },
     logprobs: true,
     topLogprobs: 1,
     thinking: false,
@@ -917,6 +1135,144 @@ test("changes the thinking template request between prompts without reloading", 
   ).toEqual({ loads: 1, requests: [true, false] });
 });
 
+test("persists configured chats and supports edit-and-resend plus regenerate", async ({ page }) => {
+  await importChatFixture(page);
+  await page.route(`**${wllamaRuntimeAssets.script}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/javascript",
+      body: `
+        export class Wllama {
+          setCompat() {}
+          async loadModel() {}
+          async *createChatCompletion(parameters) {
+            globalThis.__webaiM6Requests = [...(globalThis.__webaiM6Requests ?? []), parameters];
+            const count = globalThis.__webaiM6Requests.length;
+            yield { choices: [{ delta: { content: "Reply " + count }, logprobs: { content: [{ id: count, token: "Reply" }] } }] };
+            yield {
+              choices: [],
+              usage: { prompt_tokens: 9, completion_tokens: 2, total_tokens: 11 },
+              timings: { cache_n: count === 1 ? 0 : 5, prompt_n: count === 1 ? 9 : 4, prompt_per_second: 9, predicted_n: 2, predicted_per_second: 2 },
+            };
+          }
+          async exit() {}
+        }
+      `,
+    });
+  });
+
+  await page.goto("./chat/");
+  await page.getByLabel("System prompt").fill("Answer in exactly one sentence.");
+  await page.getByLabel("Seed").fill("7");
+  await page.getByLabel("Max output tokens").fill("33");
+  await page.getByLabel("Temperature").fill("0.25");
+  await page.getByRole("button", { name: "Load model" }).click();
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("System prompt")).toHaveValue("Answer in exactly one sentence.");
+  await page.getByLabel("Message").fill("Original question");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".chat-message-assistant")).toContainText("Reply 1");
+  await expect(page.getByText("Saved locally in this browser.")).toBeVisible();
+  await expect
+    .poll(
+      async () =>
+        await page.evaluate(async () => {
+          const database = await new Promise<IDBDatabase>((resolve, reject) => {
+            const request = indexedDB.open("webai-v1");
+            request.addEventListener("success", () => resolve(request.result), { once: true });
+            request.addEventListener("error", () => reject(request.error), { once: true });
+          });
+          const transaction = database.transaction("chats", "readonly");
+          const records = await new Promise<
+            Array<{
+              systemPrompt?: string;
+              messages?: Array<{ execution?: { systemPrompt?: string } }>;
+            }>
+          >((resolve, reject) => {
+            const request = transaction.objectStore("chats").getAll();
+            request.addEventListener("success", () => resolve(request.result), { once: true });
+            request.addEventListener("error", () => reject(request.error), { once: true });
+          });
+          database.close();
+          return {
+            conversation: records[0]?.systemPrompt,
+            response: records[0]?.messages?.find((message) => message.execution !== undefined)
+              ?.execution?.systemPrompt,
+          };
+        }),
+    )
+    .toEqual({
+      conversation: "Answer in exactly one sentence.",
+      response: "Answer in exactly one sentence.",
+    });
+
+  await page.reload();
+  await expect(page.getByText("Original question", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reply 1", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("System prompt")).toHaveValue("Answer in exactly one sentence.");
+  await expect(page.getByLabel("Seed")).toHaveValue("7");
+  await expect(page.getByLabel("Max output tokens")).toHaveValue("33");
+  await expect(page.getByPlaceholder("Load a model first")).toBeDisabled();
+
+  await page.getByRole("button", { name: "Load model" }).click();
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Edit user turn 1" }).click();
+  await page.getByLabel("Edit message").fill("Edited question");
+  await page.getByRole("button", { name: "Resend and replace later turns" }).click();
+  await expect(page.locator(".chat-message-user")).toHaveText(/Edited question/);
+  await expect(page.locator(".chat-message-assistant")).toContainText("Reply 1");
+
+  await page.getByRole("button", { name: "Regenerate" }).click();
+  await expect(page.locator(".chat-message-assistant")).toContainText("Reply 2");
+  expect(
+    await page.evaluate(() => {
+      const requests = (
+        globalThis as typeof globalThis & {
+          __webaiM6Requests?: Array<{
+            messages: Array<{ role: string; content: string }>;
+            temperature: number;
+            max_tokens: number;
+            seed: number;
+            cache_prompt: boolean;
+          }>;
+        }
+      ).__webaiM6Requests;
+      return requests?.map((request) => ({
+        messages: request.messages,
+        temperature: request.temperature,
+        maxTokens: request.max_tokens,
+        seed: request.seed,
+        cachePrompt: request.cache_prompt,
+      }));
+    }),
+  ).toEqual([
+    {
+      messages: [
+        { role: "system", content: "Answer in exactly one sentence." },
+        { role: "user", content: "Edited question" },
+      ],
+      temperature: 0.25,
+      maxTokens: 33,
+      seed: 7,
+      cachePrompt: true,
+    },
+    {
+      messages: [
+        { role: "system", content: "Answer in exactly one sentence." },
+        { role: "user", content: "Edited question" },
+      ],
+      temperature: 0.25,
+      maxTokens: 33,
+      seed: 7,
+      cachePrompt: true,
+    },
+  ]);
+  await page.getByLabel("Context (K tokens)").fill("4");
+  await page.getByLabel("Context (K tokens)").press("Tab");
+  await expect(page.getByText("No session", { exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder("Load a model first")).toBeDisabled();
+});
+
 test("coalesces a runaway token stream without blocking the page", async ({ page }) => {
   await importChatFixture(page);
   await page.route(`**${wllamaRuntimeAssets.script}`, async (route) => {
@@ -928,7 +1284,7 @@ test("coalesces a runaway token stream without blocking the page", async ({ page
           setCompat() {}
           async loadModel() {}
           async *createChatCompletion() {
-            yield { choices: [{ delta: { content: "<|channel>thought\\n" } }] };
+            yield { choices: [{ delta: { content: "<|channel>thought\\n\\u0000" } }] };
             for (let index = 0; index < 50_000; index += 1) {
               yield { choices: [{ delta: { content: "<unused49>" } }] };
             }
@@ -949,9 +1305,12 @@ test("coalesces a runaway token stream without blocking the page", async ({ page
   await expect(response).toContainText("Done.", { timeout: 10_000 });
   const thinking = response.locator("details.response-channel");
   await expect(thinking).not.toHaveAttribute("open", "");
-  expect(await thinking.locator("p").evaluate((element) => element.textContent?.length)).toBe(
-    500_000,
-  );
+  expect(
+    await thinking.locator("p").evaluate((element) => element.textContent?.length ?? 0),
+  ).toBeLessThanOrEqual(256 * 1024);
+  await expect(page.getByText(/replaced it before displaying and saving/u)).toBeVisible();
+  await expect(page.getByText(/was truncated for safe display and persistence/u)).toBeVisible();
+  await expect(page.getByText("Saved locally in this browser.")).toBeVisible();
   await expect(page.getByText("Ready", { exact: true })).toBeVisible();
 });
 

@@ -334,16 +334,29 @@ in-app; pagination/enrichment can find a size/quant match beyond the first candi
 page without presenting unknown candidates as incompatible; the manual-entry path
 from M2 remains as the escape hatch.
 
-### M6 — Chat testing depth  `pending`
+### M6 — Chat testing depth  `done`
 
 Goal: the chat surface becomes a real testing instrument.
 
-- [ ] System prompt configuration.
-- [ ] Generation parameter controls incl. seed.
-- [ ] Stop/abort, regenerate, edit-and-resend.
-- [ ] Chat history persistence + export/import.
-- [ ] Token count / context-window usage display; tokenizer inspector.
-- [ ] Context caching (prefix/KV reuse) where the runtime supports it.
+- [x] System prompt configuration.
+- [x] Generation parameter controls incl. seed.
+- [x] Stop/abort, regenerate, edit-and-resend.
+- [x] Chat history persistence + export/import.
+- [x] Token count / context-window usage display; tokenizer inspector.
+- [x] Context caching (prefix/KV reuse) where the runtime supports it.
+
+*(Core implementation landed locally 2026-07-19. D-043 adds bounded IndexedDB
+conversation records, lossless JSON/Markdown round trips, linear edit/regenerate
+semantics, portable manual-replay seeds with editable prompt steering and side-by-side
+original/new response comparison, and Prompt API restoration through `initialPrompts`.
+D-044 records the runtime-specific control, seed, token/context, and cache-evidence contract; RE-029
+records wllama's missing standalone tokenizer and RE-030 records Prompt overflow's
+unrecoverable eviction boundary. Deterministic Chrome coverage verifies
+reload persistence, exact wllama request replay, edit/regenerate truncation, Prompt
+hidden-state reconstruction before overflow, safe replay blocking after overflow,
+arbitrary-order manual replay without source-answer injection, import bounds,
+sampled-token inspection, and native cache-count display. A human live configured-chat
+workflow check completed on 2026-07-20, satisfying the milestone exit criteria.)*
 
 **Exit criteria:** a user can reproduce a configured chat (params + seed where
 supported), manage histories, and see context usage while testing.

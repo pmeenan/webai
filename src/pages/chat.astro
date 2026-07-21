@@ -5,15 +5,16 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
 <BaseLayout
   title="Chat"
-  description="Chat locally with a downloaded GGUF on wllama or browser-managed Gemini Nano and inspect live response metrics."
+  description="Configure, persist, manually replay, compare, import, and export measured local chats with a downloaded GGUF on wllama or browser-managed Gemini Nano."
 >
   <section aria-labelledby="chat-title">
     <p class="eyebrow">Local runtime workbench</p>
     <h1 id="chat-title" class="page-title">Chat</h1>
     <p class="page-summary">
       Switch between a managed GGUF on wllama and Chrome's browser-managed Gemini Nano,
-      stream a local response, and compare every timing or context measurement each
-      runtime actually exposes.
+      configure local responses, seed manual replays from saved prompts, compare old and
+      new answers side by side, and inspect every timing, token, cache, or context
+      measurement each runtime actually exposes.
     </p>
     <ChatWorkbench client:load />
   </section>

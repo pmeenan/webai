@@ -25,6 +25,59 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-031: Prompt abort does not define a reusable canonical session boundary  (2026-07-20, status: worked-around)
+
+**Environment:** Prompt API Community Group draft dated 2026-06-22 and current Chrome
+Prompt API/session-management documentation, inspected 2026-07-20. **Repro or
+measurement:** Follow the draft's `promptStreaming()` algorithms through prefill,
+generation, and an `AbortSignal` firing after prefill. **Observed:** Prefill updates the
+model's internal state and context usage before generation. The shared abort algorithm
+rejects the stream and stops production, but neither the draft nor Chrome's stop
+example states whether an interrupted prompt/partial response is rolled back from a
+reused session. This is a specification-evidence gap, not a claim that Chrome retains
+the turn. **Expected:** A stateful chat replay contract needs an explicit post-abort
+session boundary. **Impact on WebAI:** After any failed or aborted Prompt generation,
+WebAI destroys the ephemeral browser session and requires reload from its canonical
+visible transcript before another turn. **Links:** [Prompt API draft](https://webmachinelearning.github.io/prompt-api/),
+[Chrome session management](https://developer.chrome.com/docs/ai/session-management).
+
+## RE-030: Prompt overflow does not expose a replayable eviction boundary  (2026-07-19, status: worked-around)
+
+**Environment:** Stable-web Prompt API documentation and Community Group draft,
+checked 2026-07-19. **Repro or measurement:** Create a stateful session, append prompt/
+response pairs until `contextoverflow`, retain the complete visible transcript, then
+attempt to reconstruct it by passing every visible turn as `initialPrompts` to a new
+session. **Observed:** Chrome evicts oldest ordinary prompt/response pairs as needed but
+does not report which pairs were removed. `initialPrompts` are not eligible for that
+runtime eviction and `create()` rejects when they do not fit. **Expected:** Exact
+restoration would require either an exposed eviction boundary or a browser-owned saved
+session. **Impact on WebAI:** The transcript and overflow warning remain portable and
+readable, but WebAI refuses reload/edit/regenerate replay after an overflow instead of
+reviving discarded turns or risking a non-evictable oversized prefix. A new
+conversation is required; automatic summarization would be a separate, lossy feature
+decision. **Links:** [Chrome session compacting](https://developer.chrome.com/docs/ai/session-compacting),
+[Prompt API draft](https://webmachinelearning.github.io/prompt-api/).
+
+## RE-029: wllama 3.5.1 exposes completion usage but no standalone tokenizer  (2026-07-19, status: worked-around)
+
+**Environment:** `@wllama/wllama` 3.5.1 / bundled llama.cpp
+`b9640-dd4623a`, package guide/declaration/source inspection plus controlled Chrome for
+Testing 149.0.7827.55 on Ubuntu 24.04.4 LTS/Linux, 2026-07-19. **Repro or
+measurement:** Inspect `guides/intro-v3.md`, the exported `Wllama` methods, and chat
+completion types; run a captured streaming completion with usage, timings, and
+logprobs. **Observed:** The v3 guide explicitly lists low-level `tokenize()` and
+`detokenize()` among removed APIs. The wrapper exposes completion usage/timing records
+and per-sampled-token logprob records, but no supported arbitrary text-to-token call.
+`cache_prompt` and `timings.cache_n` are exposed through the native completion request
+and result. **Expected:** A general tokenizer inspector would ideally inspect arbitrary
+prompt text without generating. **Impact on WebAI:** M6 does not ship a fake or
+main-thread tokenizer. It reports exact post-response prompt/completion/cache evidence
+and retains at most 512 validated sampled output IDs/pieces, while labelling prompt
+token breakdown unavailable. A future separate tokenizer must run in a worker and be
+measured against the loaded runtime/template before its counts can be called
+equivalent (D-006, D-007, D-044). **Links:** [wllama v3 migration guide](https://github.com/ngxson/wllama/blob/3.5.1/guides/intro-v3.md),
+[wllama completion source](https://github.com/ngxson/wllama/blob/3.5.1/src/wllama.ts).
+
 ## RE-028: wllama abort polling cannot interrupt an in-flight native result request  (2026-07-19, status: worked-around)
 
 **Environment:** `@wllama/wllama` 3.5.1 / bundled llama.cpp
